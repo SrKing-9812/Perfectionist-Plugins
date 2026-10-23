@@ -17,7 +17,7 @@ const UTILS_VERSION = "2.0.0";
 
 const ENTRY_FILE = "index.js";
 const CORE_FILE = "perfectionist-utils.js";
-const REPO_BASE = "https://raw.githubusercontent.com/Lofimit/perfectionist-plugins/main/Perfectionism";
+const REPO_BASE = "https://raw.githubusercontent.com/SrKing-9812/perfectionist-plugins/main/Perfectionism";
 const MANIFEST_URL = `${REPO_BASE}/plugins.json`;
 
 // Shown when the repo is unreachable (offline, or before the repo is published).

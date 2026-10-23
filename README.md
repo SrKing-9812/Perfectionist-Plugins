@@ -16,9 +16,9 @@ Built for [Pengu Loader](https://pengu.lol)
 
 ## Plugins
 
-<table width="100%">
+<table>
   <tr>
-    <th align="left" width="100%">🛡️ Ban Blocker</th>
+    <th align="left">🛡️ Ban Blocker</th>
   </tr>
   <tr>
     <td>
@@ -27,11 +27,8 @@ Built for [Pengu Loader](https://pengu.lol)
       While a teammate is blocked, the plugin instantly prepicks the champion they are about to ban on your own pick turn. That way, their ban can never land on it.
     </td>
   </tr>
-</table>
-
-<table width="100%">
   <tr>
-    <th align="left" width="100%">🎨 Hide Unowned Skins</th>
+    <th align="left">🎨 Hide Unowned Skins</th>
   </tr>
   <tr>
     <td>
