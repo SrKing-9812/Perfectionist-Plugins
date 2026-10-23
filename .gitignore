@@ -1,0 +1,12 @@
+# local agent instructions - not part of the distributed plugin suite
+AGENTS.md
+
+# Freebuff project marker
+.freebuff/
+
+# local debug / test artifacts
+test-*
+debug-*
+*.test.*
+*.mjs
+perf-notes.md
