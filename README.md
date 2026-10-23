@@ -48,28 +48,16 @@ Built for [Pengu Loader](https://pengu.lol)
 2. Move the `Perfectionism` folder into your Pengu Loader `plugins` folder.
 3. Restart the League Client.
 
-That's it. The folder holds one tiny loader file — the plugins themselves come from the
+That's it. The folder holds one tiny loader file. The plugins themselves come from the
 [`perfectionist-plugins`](https://www.npmjs.com/package/perfectionist-plugins) npm package the
 first time the client starts. Install, remove and toggle plugins in **Settings → Perfectionism**.
 
-<br>
-
 ## Updates
 
-Every time the client starts, the loader checks npm for a newer version and runs it — publishing
+Every time the client starts, the loader checks npm for a newer version and runs it. Publishing
 a new version of the npm package **is** the update. If a new version appears while the client is
 already open, the suite downloads it with a progress window and restarts the client at a safe
 moment (never in the middle of a game). You never replace files by hand.
-
-<br>
-
-## Publishing an update (maintainers)
-
-1. Bump `version` in `package.json`.
-2. Run `npm publish` from the repo root (first time only: `npm login` first).
-
-That's the whole release process — every install picks the new version up on its own. Never edit
-anything inside the `Perfectionism` folder: that one file stays the same for everyone.
 
 <br>
 
