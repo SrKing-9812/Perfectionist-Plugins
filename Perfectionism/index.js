@@ -1,22 +1,12 @@
-/*
- * Perfectionism (Pengu Loader).
- *
- * The whole suite lives in the npm package "perfectionist-plugins", so this file never needs
- * updating: every client start it pins the newest published version and imports the core from
- * jsDelivr. Installing, uninstalling and updates are handled inside the suite (Settings >
- * Perfectionism). This folder holds no plugin code, so uninstalling leaves nothing behind.
- */
-
 const STATE_KEY = "perfectionist-plugins:state";
+const CACHE_KEY = "perfectionist-plugins:cache";
 const PKG = "perfectionist-plugins";
 const CDN = "https://cdn.jsdelivr.net/npm";
 const REGISTRY_URL = `https://registry.npmjs.org/${PKG}/latest`;
 
-/** The version to load: the one pinned by the last update, else the newest on npm, else latest. */
 export async function resolveVersion() {
   try {
     const saved = typeof DataStore !== "undefined" ? await DataStore.get(STATE_KEY) : null;
-    // "latest" is a fallback, not a pin: re-check npm so a normal pinned boot can resume.
     if (saved?.version && saved.version !== "latest") return saved.version;
   } catch {}
   try {
@@ -29,9 +19,33 @@ export async function resolveVersion() {
   return "latest";
 }
 
-/** Pengu entry point: load the core from npm and hand over to it. */
 export function init(context, tools) {
+  runCachedPlugins();
   return boot(context, tools);
+}
+
+function runCachedPlugins() {
+  try {
+    const cache = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+    const saved = JSON.parse(localStorage.getItem(STATE_KEY) || "null");
+    for (const [id, source] of Object.entries(cache?.files ?? {})) {
+      if (saved?.installed?.[id] === false) continue;
+      runPluginSource(id, source);
+    }
+  } catch (error) {
+    console.error("[Perfectionism] Could not run the cached plugin code.", error);
+  }
+}
+
+function runPluginSource(id, source) {
+  try {
+    const factory = new Function(
+      `"use strict";\n${String(source).replace(/^export /gm, "")}\nreturn typeof init === "function" ? init : null;`,
+    );
+    factory()?.();
+  } catch (error) {
+    console.error(`[Perfectionism] Could not run the cached ${id}.`, error);
+  }
 }
 
 async function boot(context, tools) {
@@ -43,7 +57,6 @@ async function boot(context, tools) {
   for (let i = 0; i < candidates.length; i++) {
     try {
       core = await load(candidates[i]);
-      // If the pinned core is gone, run at @latest instead of handing the core a dead version.
       loaded = i === 0 ? version : "latest";
       break;
     } catch (error) {
@@ -52,4 +65,22 @@ async function boot(context, tools) {
   }
   if (!core?.init) return;
   await core.init(context, { version: loaded });
+  await cacheRunningPlugins(loaded);
+}
+
+async function cacheRunningPlugins(version) {
+  try {
+    const modules = window.PerfectionistUtils?.getAvailableModules?.() ?? [];
+    const files = {};
+    for (const mod of modules) {
+      const response = await fetch(`${CDN}/${PKG}@${version}/${mod.file}`, { cache: "force-cache" });
+      const text = await response.text();
+      if (!response.ok || !text) return;
+      files[mod.id] = text;
+    }
+    if (Object.keys(files).length > 0) {
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ version, files }));
+    }
+  } catch {
+  }
 }

@@ -1,26 +1,18 @@
-/*
- * perfectionist-utils.js
- * Perfectionism core (League client, Pengu Loader). Plugin registry, the "Perfectionism"
- * settings tab (enable / install / uninstall per plugin), the installer and auto-updater that
- * pull plugin code from the npm package ("perfectionist-plugins", served by jsDelivr), and the
- * shared helpers every Perfectionism plugin reuses.
- */
-
 const READY_EVENT = "perfectionist:utils-ready";
 const STATE_KEY = "perfectionist-plugins:state";
+const CACHE_KEY = "perfectionist-plugins:cache";
 const NAV_ID = "perfectionist-plugins-nav";
 const PANEL_ID = "perfectionist-plugins-panel";
 const STYLE_ID = "perfectionist-plugins-style";
 const TAB_TITLE = "Perfectionism";
 
-export const version = "1.0.0";
+export const version = "1.0.1";
 
 const PKG = "perfectionist-plugins";
 const CDN = "https://cdn.jsdelivr.net/npm";
 const REGISTRY_URL = `https://registry.npmjs.org/${PKG}/latest`;
 const CORE_FILE = "perfectionist-utils.js";
 
-// Every plugin in the package. Plugins added in later releases show an Install button first.
 const BUNDLED_MODULES = [
   {
     id: "perfectionist-utils",
@@ -46,7 +38,6 @@ const BUNDLED_MODULES = [
   },
 ];
 
-/* Values taken from the client's own Settings > General markup so the panel reads as native. */
 const STYLE_CSS = `
 #${PANEL_ID} { padding: 12px 24px 24px 8px; box-sizing: border-box; color: #f0e6d2; font-family: "LoL Body", Arial, "Helvetica Neue", Helvetica, sans-serif; }
 #${PANEL_ID} .perf-card { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
@@ -106,7 +97,6 @@ let availableModules = BUNDLED_MODULES;
 let pendingReload = false;
 let runningVersion = version;
 
-/** Saved state: which plugins are installed and enabled. Lives in Pengu's DataStore. */
 let state = { installed: {}, enabled: {} };
 
 async function loadState() {
@@ -123,8 +113,6 @@ async function loadState() {
     state = { installed: saved.installed, enabled: saved.enabled ?? {} };
     return;
   }
-  // First run: everything this package ships starts installed. Plugins added in later releases
-  // stay uninstalled (their box shows an Install button) until the user installs them.
   for (const mod of BUNDLED_MODULES) {
     if (mod.core) continue;
     state.installed[mod.id] = true;
@@ -135,14 +123,13 @@ async function loadState() {
 
 function saveState() {
   const record = {
-    // The loader pins this exact version on its next import. Skipped for @latest fallbacks.
     version: /^\d/.test(runningVersion) ? runningVersion : undefined,
     installed: state.installed,
     enabled: state.enabled,
   };
   try {
     if (typeof DataStore !== "undefined") DataStore.set(STATE_KEY, record);
-    else localStorage.setItem(STATE_KEY, JSON.stringify(record));
+    localStorage.setItem(STATE_KEY, JSON.stringify(record));
   } catch (error) {
     console.error("[Perfectionism] Could not save plugin state.", error);
   }
@@ -151,8 +138,6 @@ function saveState() {
 function logError(scope, error) {
   console.error(`[Perfectionism] ${scope}`, error);
 }
-
-/* ---------- Plugin registry ---------- */
 
 function isPluginEnabled(id) {
   const entry = registry.get(id);
@@ -179,7 +164,6 @@ function applyLifecycle(entry, enabled) {
   }
 }
 
-/** Registers a plugin; it shows up in the Perfectionism settings tab and follows the saved on/off state. */
 function registerPlugin(definition) {
   const { id, name, description = "", version = "1.0.0", defaultEnabled = true, onEnable, onDisable } = definition ?? {};
   if (!id || !name) {
@@ -195,7 +179,6 @@ function registerPlugin(definition) {
   refreshPanel();
 }
 
-/** Turns a plugin off (if needed) and removes it from the tab without touching its file. */
 function unregisterPlugin(id) {
   const entry = registry.get(id);
   if (!entry) return;
@@ -220,8 +203,6 @@ function getPlugins() {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/* ---------- Installer and updater ---------- */
-
 function getAvailableModules() {
   return availableModules.filter((m) => !m.core);
 }
@@ -231,7 +212,6 @@ function isInstalled(mod) {
   return installed === undefined ? registry.has(mod.id) : Boolean(installed);
 }
 
-/** True when a is a newer version than b ("1.10.0" > "1.9.0"). */
 function newerVersion(a, b) {
   const pa = String(a ?? "0")
     .split(".")
@@ -250,34 +230,26 @@ function moduleUrl(file) {
   return `${CDN}/${PKG}@${runningVersion}/${file}`;
 }
 
-/** Imports a module from the package CDN. coords.importModule overrides it in tests. */
 function importModule(url) {
   return coords?.importModule ? coords.importModule(url) : import(url);
 }
 
-/**
- * Installs a plugin: it is marked installed and loads from the npm package on the next client
- * start. The DONE button restarts to load it right away.
- */
 async function installModule(mod) {
   state.installed[mod.id] = true;
-  delete state.enabled[mod.id]; // a fresh install starts enabled, like a new copy would
+  delete state.enabled[mod.id];
   saveState();
-  // The plugin is installed but only the next client start loads it; the DONE button restarts.
   pendingReload = true;
   refreshPanel();
 }
 
-/** Turns the plugin off first so it stops running, then uninstalls it. No restart needed. */
 async function uninstallModule(mod) {
-  unregisterPlugin(mod.id); // off first: it stops running before the state goes away
+  unregisterPlugin(mod.id);
   state.enabled[mod.id] = false;
   state.installed[mod.id] = false;
   saveState();
   refreshPanel();
 }
 
-/* League client restart is only safe outside a game: wait for a quiet phase first. */
 const SAFE_PHASES = new Set(["None", "Lobby", "EndOfGame"]);
 
 function reloadClientNow() {
@@ -333,14 +305,11 @@ function buildUpdateWindow() {
   };
 }
 
-/**
- * Downloads the new package version into the browser cache with a progress window, pins it and
- * restarts the client at a safe moment, so the next start runs the new version.
- */
 async function runUpdate(target) {
   const win = buildUpdateWindow();
   (document.body ?? document.documentElement).append(win.root);
   const files = [{ name: "Perfectionism Core", file: CORE_FILE }, ...BUNDLED_MODULES.filter((m) => !m.core)];
+  const sources = {};
   for (let i = 0; i < files.length; i++) {
     win.setStatus(`Downloading ${files[i].name}...`);
     win.setProgress(i / files.length);
@@ -349,12 +318,16 @@ async function runUpdate(target) {
       if (!response.ok) throw new Error(`download failed (${response.status})`);
       const text = await response.text();
       if (!text || !/export/.test(text)) throw new Error("the downloaded file looks invalid");
+      if (files[i].id) sources[files[i].id] = text;
     } catch (error) {
       logError(`could not update to ${target}.`, error);
       win.fail(`Could not update to ${target}. It will be retried on the next client start.`);
       return;
     }
   }
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ version: target, files: sources }));
+  } catch {}
   win.setProgress(1);
   runningVersion = target;
   saveState();
@@ -362,9 +335,8 @@ async function runUpdate(target) {
   reloadWhenSafe();
 }
 
-/** Checks npm for a newer package version and installs it. */
 async function checkForUpdates() {
-  if (!/^\d+\.\d+\.\d+$/.test(runningVersion)) return; // loaded through the @latest fallback
+  if (!/^\d+\.\d+\.\d+$/.test(runningVersion)) return;
   let target = null;
   try {
     const response = await fetch(REGISTRY_URL, { headers: { Accept: "application/json" }, cache: "no-store" });
@@ -375,13 +347,9 @@ async function checkForUpdates() {
   if (target && newerVersion(target, runningVersion)) runUpdate(target);
 }
 
-/**
- * Loads every installed plugin from the npm package (this core file is not a plugin). Plugins
- * added in later releases show an Install button first; uninstalled ones are skipped.
- */
 async function loadModules() {
   for (const mod of BUNDLED_MODULES) {
-    if (mod.core || resolved.has(mod.id) || !isInstalled(mod)) continue;
+    if (mod.core || resolved.has(mod.id) || registry.has(mod.id) || !isInstalled(mod)) continue;
     try {
       const plugin = await importModule(moduleUrl(mod.file));
       resolved.set(mod.id, plugin);
@@ -391,8 +359,6 @@ async function loadModules() {
     }
   }
 }
-
-/* ---------- Shared DOM watching (one observer for every plugin) ---------- */
 
 function scheduleScan() {
   if (scanScheduled) return;
@@ -432,7 +398,6 @@ function ensureObserver() {
   observer.observe(document.documentElement, { childList: true, subtree: true });
 }
 
-/** Calls callback(element) once for every element matching selector, now and whenever new ones appear. */
 function watch(selector, callback) {
   const entry = { callback, seen: new WeakSet() };
   let entries = watchers.get(selector);
@@ -449,7 +414,6 @@ function watch(selector, callback) {
   };
 }
 
-/** Resolves with the first element matching selector, or rejects after timeout ms. */
 function waitFor(selector, timeout = 15000) {
   return new Promise((resolve, reject) => {
     let unwatch = null;
@@ -465,22 +429,17 @@ function waitFor(selector, timeout = 15000) {
   });
 }
 
-/** Injects a named stylesheet block. Re-injecting the same name replaces its CSS. */
 function addStyle(name, css) {
   let element = document.getElementById(name);
   if (!element) {
     element = document.createElement("style");
     element.id = name;
-    // document.head can still be missing at Pengu boot; the document element always exists.
     (document.head ?? document.documentElement).appendChild(element);
   }
   element.textContent = css;
   return () => element.remove();
 }
 
-/* ---------- LCU helpers ---------- */
-
-/** GET an LCU endpoint. Identical in-flight requests are shared, results are cached for ttl ms. */
 function lcuGet(path, { ttl = 0 } = {}) {
   const now = Date.now();
   const cached = requestCache.get(path);
@@ -504,7 +463,6 @@ function lcuGet(path, { ttl = 0 } = {}) {
   return entry.promise;
 }
 
-/** Sends a POST, PUT, PATCH or DELETE request to an LCU endpoint. */
 async function lcuSend(method, path, body) {
   const response = await fetch(path, {
     method,
@@ -515,16 +473,12 @@ async function lcuSend(method, path, body) {
   return response.status === 204 ? null : response.json();
 }
 
-/** Subscribes to an LCU socket topic. Returns an unsubscribe function, or null without a socket. */
 function subscribe(uri, listener) {
   if (!socket?.observe) return null;
   const handle = socket.observe(uri, listener);
   return () => handle?.disconnect?.();
 }
 
-/* ---------- RCP helpers ---------- */
-
-/** Resolves with a Riot Client Plugin API once it is loaded. */
 function whenRcpReady(name, timeout = 15000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${name}`)), timeout);
@@ -541,8 +495,6 @@ function whenRcpReady(name, timeout = 15000) {
     attempt();
   });
 }
-
-/* ---------- Settings tab ---------- */
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -598,7 +550,6 @@ function buildCard(mod) {
   info.append(name);
   if (mod.description) info.append(el("div", "perf-desc", mod.description));
 
-  // The toggle and the install / uninstall button cluster together in the box's top-right corner.
   const actions = el("div", "perf-actions");
   if (installed) actions.append(buildToggle(mod));
   actions.append(installed ? buildUninstallButton(mod) : buildInstallButton(mod));
@@ -627,7 +578,6 @@ function refreshPanel() {
 
 function setNavActive(activeNav) {
   for (const nav of document.querySelectorAll(".lol-settings-nav")) {
-    // The native styles key off the presence of [active], so remove the attribute instead of setting "false".
     if (nav === activeNav) {
       nav.setAttribute("active", "true");
     } else if (nav.hasAttribute("active")) {
@@ -636,8 +586,6 @@ function setNavActive(activeNav) {
   }
 }
 
-// True while our panel should stay open. Ember can re-render the native Settings page and reset its
-// sidebar and title, so keepPanelInSync puts our state back.
 let panelRequested = false;
 
 function openPanel() {
@@ -700,10 +648,6 @@ function keepPanelInSync() {
   if (title && title.textContent !== TAB_TITLE.toUpperCase()) title.textContent = TAB_TITLE.toUpperCase();
 }
 
-/**
- * Inserts the "Perfectionism" group into the native Settings sidebar. Runs for every native group
- * title that appears, so the tab is re-added whenever the Settings page renders again.
- */
 function ensureSettingsTab(titleNode) {
   if (document.getElementById(NAV_ID)) return;
 
@@ -737,8 +681,6 @@ function isDoneButton(target) {
 function installSettingsTab() {
   addStyle(STYLE_ID, STYLE_CSS);
 
-  // Capture phase: our nav item is handled before the native Ember handlers run, and picking any
-  // native category closes our panel. The settings DONE button restarts after a plugin install.
   document.addEventListener(
     "click",
     (event) => {
@@ -757,7 +699,6 @@ function installSettingsTab() {
       const nativeNav = target.closest(".lol-settings-nav");
       if (nativeNav && document.getElementById(PANEL_ID)) {
         closePanel();
-        // Ember does not refresh the breadcrumb after our panel replaced it, so set it to the clicked category.
         const label = nativeNav.textContent.trim();
         setTimeout(() => {
           const title = document.querySelector(".lol-settings-title-current");
@@ -771,8 +712,6 @@ function installSettingsTab() {
   watch(".lol-settings-nav-title", ensureSettingsTab);
   setInterval(keepPanelInSync, 300);
 }
-
-/* ---------- Bootstrap ---------- */
 
 const utils = {
   version,
@@ -793,17 +732,13 @@ const utils = {
   whenRcpReady,
 };
 
-/**
- * Pengu entry point. Loading the file a second time is a no-op. Plugins can wait for the utils with:
- *   window.PerfectionistUtils ?? await new Promise(r => addEventListener("perfectionist:utils-ready", () => r(window.PerfectionistUtils), { once: true }))
- */
 export async function init(context, coordsProvided) {
   if (window.PerfectionistUtils) return;
   coords = coordsProvided ?? null;
   runningVersion = coords?.version || version;
 
   await loadState();
-  saveState(); // pin this version for the loader's next import
+  saveState();
 
   socket = context?.socket ?? null;
   window.PerfectionistUtils = utils;
@@ -812,7 +747,7 @@ export async function init(context, coordsProvided) {
 
   try {
     await loadModules();
-    checkForUpdates(); // runs in the background; it restarts the client when it installs an update
+    checkForUpdates();
   } catch (error) {
     logError("startup failed.", error);
   }

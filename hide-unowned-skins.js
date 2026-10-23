@@ -1,14 +1,3 @@
-/*
- * hide-unowned-skins.js
- * Hide Unowned Skins (Perfectionism, Pengu Loader).
- *
- * In champ select, the skin carousel only shows the skins you own for the picked champion.
- * Unowned skins are stripped from the carousel data before the client renders it (socket
- * pushes and fetch/XHR responses), with a DOM safety net for anything that slips through.
- *
- * Requires perfectionist-utils.js.
- */
-
 export const version = "2.1.0";
 
 const PLUGIN_ID = "hide-unowned-skins";
@@ -28,7 +17,6 @@ const STATE_KEY = "perfectionist-plugins:state";
 
 const CSS = `
 .${HIDDEN_CLASS} { display: none !important; margin: 0 !important; padding: 0 !important; border: none !important; }
-/* Visible dots are centred, so the hidden ones leave no gap in the row. */
 [data-perf-dots] { justify-content: center !important; }
 `;
 
@@ -39,13 +27,10 @@ const OBSERVER_OPTIONS = {
   attributeFilter: ["class", "style"],
 };
 
-/* ---- source filter: unowned skins never reach the client's carousel ---- */
-
 let filterActive = true;
-let rawFetch = null; // the unfiltered fetch, kept for the plugin's own reads of the carousel order
-let clientSkinOrder = []; // skin ids the client actually received, in order
+let rawFetch = null;
+let clientSkinOrder = [];
 
-/** Saved plugin state decides the filter at boot; onEnable / onDisable update it afterwards. */
 function readDefaultEnabled() {
   try {
     const saved = JSON.parse(localStorage.getItem(STATE_KEY) || "{}");
@@ -55,7 +40,6 @@ function readDefaultEnabled() {
   }
 }
 
-/** A skin is kept when owned; the base skin always is. Unknown ownership is left to the DOM net. */
 function isOwnedSkin(skin) {
   if (!skin || typeof skin !== "object") return true;
   const id = typeof skin.id === "number" ? skin.id : null;
@@ -66,21 +50,18 @@ function isOwnedSkin(skin) {
   return true;
 }
 
-/** Returns the owned-only list, or null when nothing was removed. */
 function filterSkinList(list) {
   if (!Array.isArray(list)) return null;
   const kept = list.filter(isOwnedSkin);
   return kept.length === list.length ? null : kept;
 }
 
-/** Remembers the list the client received (in order) so the DOM net can map the page dots correctly. */
 function recordClientOrder(list) {
   if (Array.isArray(list)) {
     clientSkinOrder = list.map((skin) => (skin && typeof skin.id === "number" ? skin.id : null)).filter((id) => id !== null);
   }
 }
 
-/** Rewrites a CoreSocket frame ([eventId, topic, { uri, eventType, data }]) for the carousel push; null when not ours. */
 function rewriteWebSocketFrame(text) {
   if (!filterActive || typeof text !== "string") return null;
   if (text.indexOf("skin-carousel-skins") === -1) return null;
@@ -100,7 +81,6 @@ function rewriteWebSocketFrame(text) {
   return JSON.stringify([frame[0], frame[1], Object.assign({}, payload, { data: kept })]);
 }
 
-/** Wraps a WebSocket "message" listener so it only ever sees owned skins. */
 function wrapMessageListener(listener) {
   if (typeof listener !== "function" || listener.__perfSkinWrap) return listener;
   const wrapped = function (event) {
@@ -124,7 +104,6 @@ function wrapMessageListener(listener) {
   return wrapped;
 }
 
-/** Filters matching WebSocket frames before any message listener runs. */
 function installWebSocketFilter() {
   const proto = window.WebSocket && window.WebSocket.prototype;
   if (!proto || proto.addEventListener.__perfSkinFilter) return;
@@ -173,11 +152,9 @@ function installWebSocketFilter() {
   proto.addEventListener.__perfSkinFilter = true;
 }
 
-/** Filters matching fetch() responses (the data-binding may snapshot the endpoint over REST). */
 function installFetchFilter() {
   const original = window.fetch;
   if (typeof original !== "function" || original.__perfSkinFilter) return;
-  // Keep the first captured fetch: it is the unfiltered one, and the plugin's own reads need it.
   if (!rawFetch) rawFetch = original;
 
   const wrapped = function (input, init) {
@@ -206,10 +183,6 @@ function installFetchFilter() {
   window.fetch = wrapped;
 }
 
-/**
- * Filters matching XHR responses (jQuery ajax and getJson go through XHR). The response is
- * filtered lazily in the responseText / response getters: consumers read it the moment it arrives.
- */
 function installXhrFilter() {
   const proto = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
   if (!proto || proto.open.__perfSkinFilter) return;
@@ -242,7 +215,6 @@ function installXhrFilter() {
             recordClientOrder(kept ?? json);
             if (kept) cache.filtered = JSON.stringify(kept);
           } catch {
-            /* not JSON, leave the response alone */
           }
         }
         return cache.filtered;
@@ -272,7 +244,6 @@ function installSourceFilter() {
   }
 }
 
-/** Re-applies the wrappers after the client's own instrumentation replaces them; double filtering is harmless. */
 function ensureSourceFilter() {
   try {
     installWebSocketFilter();
@@ -283,33 +254,27 @@ function ensureSourceFilter() {
   }
 }
 
-/* ---- DOM safety net: hide and repack whatever the source filter misses ---- */
-
 let api = null;
 let summonerId = null;
-let ownedSkinIds = null; // Set of owned skin ids for the current champion, null while unknown
+let ownedSkinIds = null;
 let currentChampionId = null;
-let carouselOrder = []; // Skin ids in carousel order, used to map the page dots
+let carouselOrder = [];
 let selectedSkinId = null;
-let failure = null; // { championId, message, retryAt } after a failed inventory load
+let failure = null;
 let requestToken = 0;
 let pollTimer = null;
 let pollInFlight = false;
 let selectInFlight = false;
-let sessionMisses = 0; // consecutive failed session reads before state is cleared
-let championMisses = 0; // consecutive polls without a champion before state is cleared
-let renderObserver = null; // Re-applies the hiding whenever the client re-renders the carousel
-const repackOriginals = new Map(); // item -> its native inline left, restored when nothing is hidden
+let sessionMisses = 0;
+let championMisses = 0;
+let renderObserver = null;
+const repackOriginals = new Map();
 let removeStyle = null;
 
 function logError(scope, error) {
   console.error(`[Perfectionist] Hide Unowned Skins: ${scope}`, error);
 }
 
-/**
- * Reads a carousel item's skin id from its markup (thumbnails live in .../Skins/Skin<n>/).
- * Items without a readable id are left alone.
- */
 function readSkinId(item) {
   const html = item.innerHTML;
   const numbered = html.match(/Skins\/Skin(\d+)\//i) ?? html.match(/Skin(\d+)\//);
@@ -318,7 +283,6 @@ function readSkinId(item) {
   return null;
 }
 
-/** The element to hide: climbs to the wrapper when the item is its only child, so no empty slot is left. */
 function hideTargetFor(item) {
   let target = item;
   for (let depth = 0; depth < 2; depth++) {
@@ -329,7 +293,6 @@ function hideTargetFor(item) {
   return target;
 }
 
-/** Repacks visible items flush around the selected one so hidden items leave no gaps. */
 function repackVisibleItems(items) {
   const visible = items.filter((item) => !item.classList.contains(HIDDEN_CLASS));
   if (visible.length < 2) return;
@@ -338,7 +301,6 @@ function repackVisibleItems(items) {
   const anchor = selectedIndex >= 0 ? items[selectedIndex] : visible[Math.floor(visible.length / 2)];
   const anchorDomIndex = items.indexOf(anchor);
 
-  // The selected card is wider than its neighbours, so widths are read per item rather than assumed.
   const widthOf = (item) => item.getBoundingClientRect().width || (item === anchor ? 117 : 73);
   const toPx = (item) => {
     const raw = item.style.left || "0";
@@ -347,12 +309,10 @@ function repackVisibleItems(items) {
     return (parseFloat(raw) / 100) * box;
   };
 
-  // Pack outwards from the selected card: items before it go left, items after it go right.
   const anchorLeft = toPx(anchor);
   let rightX = anchorLeft + widthOf(anchor);
   let leftX = anchorLeft;
 
-  // Only assign on change (no observer loop); the first overridden position is kept for restoreRepack.
   const setLeft = (item, x) => {
     const want = `${x}px`;
     if (item.style.getPropertyValue("left") !== want || item.style.getPropertyPriority("left") !== "important") {
@@ -381,7 +341,6 @@ function repackVisibleItems(items) {
   });
 }
 
-/** Puts the carousel items the repack moved back at the client's own positions. */
 function restoreRepack() {
   if (repackOriginals.size === 0) return;
   for (const [item, original] of repackOriginals) {
@@ -391,7 +350,6 @@ function restoreRepack() {
   repackOriginals.clear();
 }
 
-/** Shows or hides every carousel item, its wrapper and its page dot. Unknown ownership stays visible. */
 function applyAll() {
   const items = [...document.querySelectorAll(SKIN_ITEM_SELECTOR)];
   let hidden = 0;
@@ -405,7 +363,6 @@ function applyAll() {
 
   const dots = [...document.querySelectorAll(DOT_SELECTOR)];
   let dotsHidden = 0;
-  // Dots are only mapped when their count matches the list the client received.
   const dotsMapped = carouselOrder.length > 0 && dots.length === carouselOrder.length;
   dots.forEach((dot, index) => {
     const skinId = dotsMapped ? carouselOrder[index] : undefined;
@@ -419,14 +376,11 @@ function applyAll() {
     else if (dotsHidden === 0 && dotList.hasAttribute("data-perf-dots")) dotList.removeAttribute("data-perf-dots");
   }
 
-  // Only touch native positions when something was actually hidden.
   if (ownedSkinIds !== null && hidden > 0) repackVisibleItems(items);
   else if (hidden === 0) restoreRepack();
 }
 
-/** Applies the hiding without letting its own DOM changes retrigger the observer. */
 function applyAllGuarded() {
-  // Disconnect while applying so the changes cannot retrigger the observer.
   renderObserver?.disconnect();
   try {
     applyAll();
@@ -454,7 +408,6 @@ async function loadOwnedSkins(championId) {
   return { owned: new Set(skins.filter((skin) => skin.ownership?.owned).map((skin) => skin.id)), order };
 }
 
-/** Skin ids in carousel order; prefers the list the client received, falls back to the raw endpoint. */
 async function loadCarouselOrder() {
   if (clientSkinOrder.length > 0) return [...clientSkinOrder];
   try {
@@ -472,7 +425,6 @@ async function loadCarouselOrder() {
   }
 }
 
-/** Next owned skin id in ascending order, wrapping around; null when nothing is owned. */
 function nextOwnedSkin(owned, fromId, direction) {
   const ids = [...owned].sort((a, b) => a - b);
   if (ids.length === 0) return null;
@@ -480,7 +432,6 @@ function nextOwnedSkin(owned, fromId, direction) {
   return [...ids].reverse().find((id) => id < fromId) ?? ids[ids.length - 1];
 }
 
-/** Selects a skin through the client's own selection endpoint, so the carousel follows it. */
 async function selectSkin(skinId) {
   selectedSkinId = skinId;
   selectInFlight = true;
@@ -491,7 +442,6 @@ async function selectSkin(skinId) {
   }
 }
 
-/** Forgets the current champ select; only on real session loss, so transient errors cannot flash skins back. */
 function resetState() {
   requestToken++;
   ownedSkinIds = null;
@@ -505,12 +455,10 @@ function resetState() {
   applyAll();
 }
 
-/** Loads the owned skins for a champion. Results that arrive after a newer request are ignored. */
 function loadChampion(championId) {
   currentChampionId = championId;
   ownedSkinIds = null;
   failure = null;
-  // The client's list for the new champion arrives with the next carousel push.
   clientSkinOrder = [];
   const token = ++requestToken;
 
@@ -518,7 +466,6 @@ function loadChampion(championId) {
     ([{ owned, order: inventoryOrder }, carouselIds]) => {
       if (token !== requestToken) return;
       ownedSkinIds = owned;
-      // The carousel endpoint can return nothing; the inventory lists the same skins in the same order.
       carouselOrder = carouselIds.length > 0 ? carouselIds : inventoryOrder;
       applyAll();
     },
@@ -526,13 +473,11 @@ function loadChampion(championId) {
       if (token !== requestToken) return;
       logError(`could not load owned skins for champion ${championId}.`, error);
       failure = { championId, message: error.message, retryAt: Date.now() + RETRY_MS };
-      // Forget the champion so a later poll retries after RETRY_MS.
       currentChampionId = null;
     },
   );
 }
 
-/** Works out which champion the local player is on (locked in or hovered) and keeps the carousel in step. */
 function updateForSession(session, selection) {
   const me = session?.myTeam?.find((player) => player.cellId === session.localPlayerCellId);
   const championId = me?.championId || me?.championPickIntent || null;
@@ -551,12 +496,10 @@ function updateForSession(session, selection) {
 
   if (ownedSkinIds === null) return;
 
-  // Keep the selection in step with the client. Only skins of this champion count.
   const serverSkinId = selection?.selectedSkinId || me.selectedSkinId || null;
   const belongsToChampion = serverSkinId !== null && Math.floor(serverSkinId / 1000) === championId;
   if (!selectInFlight && belongsToChampion) selectedSkinId = serverSkinId;
 
-  // If the client selected a skin the player doesn't own, move to the first owned skin.
   if (!selectInFlight && belongsToChampion && !ownedSkinIds.has(serverSkinId)) {
     const fallback = nextOwnedSkin(ownedSkinIds, 0, 1);
     if (fallback !== null) {
@@ -567,7 +510,6 @@ function updateForSession(session, selection) {
   applyAll();
 }
 
-/** Reads the session and selection once a second to keep the carousel in step; errors outside champ select clear the state. */
 async function pollSession() {
   if (pollInFlight || !api) return;
   ensureSourceFilter();
@@ -592,8 +534,6 @@ function onEnable(utils) {
   filterActive = true;
   removeStyle = api.addStyle(STYLE_ID, CSS);
 
-  // The client re-creates carousel items and dots on selection changes; re-apply before the next paint.
-  // document.body can still be null at Pengu boot, so observe the document element.
   renderObserver = new MutationObserver(() => applyAllGuarded());
   renderObserver.observe(document.documentElement ?? document, OBSERVER_OPTIONS);
 
@@ -615,9 +555,7 @@ function onDisable() {
   api = null;
 }
 
-/** Pengu entry point. Registers with the Perfectionism core. */
 export function init() {
-  // Installed before the client's bundles create their sockets and send their first requests.
   installSourceFilter();
 
   const registerWith = (utils) => {
