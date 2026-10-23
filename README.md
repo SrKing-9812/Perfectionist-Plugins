@@ -28,6 +28,9 @@ Built for [Pengu Loader](https://pengu.lol)
     </td>
   </tr>
   <tr>
+    <td>&nbsp;</td>
+  </tr>
+  <tr>
     <th align="left">🎨 Hide Unowned Skins</th>
   </tr>
   <tr>
@@ -38,8 +41,6 @@ Built for [Pengu Loader](https://pengu.lol)
     </td>
   </tr>
 </table>
-
-<br>
 
 ## Install
 
