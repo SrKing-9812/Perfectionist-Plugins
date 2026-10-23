@@ -2,8 +2,8 @@
  * perfectionist-utils.js
  * Perfectionism core (League client, Pengu Loader). Plugin registry, the "Perfectionism"
  * settings tab (enable / install / uninstall per plugin), the installer and auto-updater that
- * pull plugin code from the GitHub repo into Pengu's DataStore (index.js runs it in place of the
- * files on disk), and the shared helpers every Perfectionism plugin reuses.
+ * pull plugin code from the npm package ("perfectionist-plugins", served by jsDelivr), and the
+ * shared helpers every Perfectionism plugin reuses.
  */
 
 const READY_EVENT = "perfectionist:utils-ready";
@@ -13,14 +13,14 @@ const PANEL_ID = "perfectionist-plugins-panel";
 const STYLE_ID = "perfectionist-plugins-style";
 const TAB_TITLE = "Perfectionism";
 
-export const version = "2.0.0";
+export const version = "1.0.0";
 
-const ENTRY_FILE = "index.js";
+const PKG = "perfectionist-plugins";
+const CDN = "https://cdn.jsdelivr.net/npm";
+const REGISTRY_URL = `https://registry.npmjs.org/${PKG}/latest`;
 const CORE_FILE = "perfectionist-utils.js";
-const REPO_BASE = "https://raw.githubusercontent.com/SrKing-9812/perfectionist-plugins/main/Perfectionism";
-const MANIFEST_URL = `${REPO_BASE}/plugins.json`;
 
-// Shown when the repo is unreachable (offline, or before the repo is published).
+// Every plugin in the package. Plugins added in later releases show an Install button first.
 const BUNDLED_MODULES = [
   {
     id: "perfectionist-utils",
@@ -49,8 +49,8 @@ const BUNDLED_MODULES = [
 /* Values taken from the client's own Settings > General markup so the panel reads as native. */
 const STYLE_CSS = `
 #${PANEL_ID} { padding: 12px 24px 24px 8px; box-sizing: border-box; color: #f0e6d2; font-family: "LoL Body", Arial, "Helvetica Neue", Helvetica, sans-serif; }
-#${PANEL_ID} .perf-card { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 24px;
-  padding: 18px 22px; margin-bottom: 14px; box-sizing: border-box;
+#${PANEL_ID} .perf-card { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
+  padding: 16px 18px; margin-bottom: 12px; box-sizing: border-box;
   background: #010a13; border: 1px solid #785a28; }
 #${PANEL_ID} .perf-card:hover { border-color: #c89b3c; }
 #${PANEL_ID} .perf-card--missing { opacity: 0.75; }
@@ -70,13 +70,12 @@ const STYLE_CSS = `
 #${PANEL_ID} .perf-toggle input:checked + .perf-box::after { display: block; }
 #${PANEL_ID} .perf-toggle:hover .perf-box { border-color: #c89b3c; }
 #${PANEL_ID} .perf-toggle input:focus-visible + .perf-box { outline: 1px solid #c89b3c; outline-offset: 2px; }
-.perf-btn { font-family: "LoL Body", Arial, sans-serif; font-size: 11px; font-weight: 700;
+.perf-btn { font-family: "LoL Body", Arial, sans-serif; font-size: 11px; font-weight: 700; line-height: 12px;
   letter-spacing: 1px; text-transform: uppercase; color: #c89b3c; background: #0a1428;
-  border: 1px solid #785a28; padding: 7px 16px; cursor: pointer; }
+  border: 1px solid #785a28; padding: 8px 16px; cursor: pointer; }
 .perf-btn:hover { color: #f0e6d2; border-color: #c89b3c; background: #1e2328; }
 .perf-btn:disabled { opacity: 0.5; cursor: default; }
-#${PANEL_ID} .perf-install, #${PANEL_ID} .perf-uninstall { position: absolute; top: 10px; right: 10px; }
-#${PANEL_ID} .perf-uninstall { width: 24px; height: 24px; padding: 0; display: flex; align-items: center; justify-content: center; }
+#${PANEL_ID} .perf-uninstall { width: 30px; height: 30px; padding: 0; display: flex; align-items: center; justify-content: center; }
 #${PANEL_ID} .perf-uninstall::after { content: ""; width: 11px; height: 11px;
   background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5' fill='none' stroke='%23c89b3c' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") center / 11px 11px no-repeat; }
 #${PANEL_ID} .perf-empty { font-size: 12px; color: #a09b8c; }
@@ -97,30 +96,53 @@ const STYLE_CSS = `
 const registry = new Map();
 const watchers = new Map();
 const requestCache = new Map();
-let state = loadState();
 let socket = null;
 let observer = null;
 let scanScheduled = false;
 
-let loader = null;
-let installedFiles = new Set();
+let coords = null;
 const resolved = new Map();
 let availableModules = BUNDLED_MODULES;
 let pendingReload = false;
+let runningVersion = version;
 
-function loadState() {
+/** Saved state: which plugins are installed and enabled. Lives in Pengu's DataStore. */
+let state = { installed: {}, enabled: {} };
+
+async function loadState() {
+  let saved = null;
   try {
-    const parsed = JSON.parse(localStorage.getItem(STATE_KEY) || "{}");
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch (error) {
-    console.error("[Perfectionism] Could not read saved plugin state.", error);
-    return {};
+    saved =
+      typeof DataStore !== "undefined"
+        ? await DataStore.get(STATE_KEY)
+        : JSON.parse(localStorage.getItem(STATE_KEY) || "null");
+  } catch {
+    saved = null;
   }
+  if (saved?.installed && typeof saved.installed === "object") {
+    state = { installed: saved.installed, enabled: saved.enabled ?? {} };
+    return;
+  }
+  // First run: everything this package ships starts installed. Plugins added in later releases
+  // stay uninstalled (their box shows an Install button) until the user installs them.
+  for (const mod of BUNDLED_MODULES) {
+    if (mod.core) continue;
+    state.installed[mod.id] = true;
+    state.enabled[mod.id] = mod.defaultEnabled ?? true;
+  }
+  saveState();
 }
 
 function saveState() {
+  const record = {
+    // The loader pins this exact version on its next import. Skipped for @latest fallbacks.
+    version: /^\d/.test(runningVersion) ? runningVersion : undefined,
+    installed: state.installed,
+    enabled: state.enabled,
+  };
   try {
-    localStorage.setItem(STATE_KEY, JSON.stringify(state));
+    if (typeof DataStore !== "undefined") DataStore.set(STATE_KEY, record);
+    else localStorage.setItem(STATE_KEY, JSON.stringify(record));
   } catch (error) {
     console.error("[Perfectionism] Could not save plugin state.", error);
   }
@@ -135,7 +157,7 @@ function logError(scope, error) {
 function isPluginEnabled(id) {
   const entry = registry.get(id);
   if (!entry) return false;
-  return typeof state[id] === "boolean" ? state[id] : entry.defaultEnabled;
+  return typeof state.enabled[id] === "boolean" ? state.enabled[id] : entry.defaultEnabled;
 }
 
 function applyLifecycle(entry, enabled) {
@@ -184,10 +206,10 @@ function unregisterPlugin(id) {
 
 function setPluginEnabled(id, enabled) {
   const entry = registry.get(id);
-  state[id] = Boolean(enabled);
+  state.enabled[id] = Boolean(enabled);
   saveState();
   if (!entry) return false;
-  applyLifecycle(entry, state[id]);
+  applyLifecycle(entry, Boolean(enabled));
   refreshPanel();
   return true;
 }
@@ -205,96 +227,53 @@ function getAvailableModules() {
 }
 
 function isInstalled(mod) {
-  return registry.has(mod.id) || installedFiles.has(mod.file);
+  const installed = state.installed[mod.id];
+  return installed === undefined ? registry.has(mod.id) : Boolean(installed);
 }
 
-function moduleFileUrl(mod) {
-  return `${REPO_BASE}/${mod.file}`;
-}
-
-/** The local version of a module: the running one, else the downloaded or on-disk copy. */
-async function resolveLocalVersion(mod) {
-  if (mod.core) return version;
-  const entry = registry.get(mod.id);
-  if (entry) return entry.version;
-  const store = await loader.readStore();
-  const overlay = store.modules[mod.file];
-  if (overlay?.version) return overlay.version;
-  let disk = null;
-  try {
-    disk = await loader.importDisk(mod.file);
-  } catch {
-    disk = null;
+/** True when a is a newer version than b ("1.10.0" > "1.9.0"). */
+function newerVersion(a, b) {
+  const pa = String(a ?? "0")
+    .split(".")
+    .map(Number);
+  const pb = String(b ?? "0")
+    .split(".")
+    .map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff > 0;
   }
-  return disk ? (disk.version ?? "0.0.0") : null;
+  return false;
 }
 
-async function fetchManifest() {
-  try {
-    const response = await fetch(MANIFEST_URL, { headers: { Accept: "application/json" } });
-    if (!response.ok) return null;
-    const data = await response.json();
-    const modules = data && Array.isArray(data.modules) ? data.modules.filter((m) => m && m.id && m.file && m.name && m.version) : [];
-    return modules.length ? modules : null;
-  } catch {
-    return null;
-  }
+function moduleUrl(file) {
+  return `${CDN}/${PKG}@${runningVersion}/${file}`;
 }
 
-/** Saves a downloaded module file into the store. */
-async function putModule(file, text, fallbackVersion) {
-  const store = await loader.readStore();
-  store.modules[file] = { code: text, version: loader.parseVersion(text) ?? fallbackVersion ?? "0.0.0", updatedAt: Date.now() };
-  store.removed = store.removed.filter((f) => f !== file);
-  await loader.writeStore(store);
-  installedFiles.add(file);
-}
-
-/** Removes a module from the store and blocks the file on disk from loading. */
-async function dropModule(file) {
-  const store = await loader.readStore();
-  delete store.modules[file];
-  if (!store.removed.includes(file)) store.removed.push(file);
-  await loader.writeStore(store);
-  installedFiles.delete(file);
+/** Imports a module from the package CDN. coords.importModule overrides it in tests. */
+function importModule(url) {
+  return coords?.importModule ? coords.importModule(url) : import(url);
 }
 
 /**
- * Installs a plugin: the file on disk is enough when there is one, otherwise it is downloaded into
- * the store. Only the next client start loads it; the DONE button restarts.
+ * Installs a plugin: it is marked installed and loads from the npm package on the next client
+ * start. The DONE button restarts to load it right away.
  */
 async function installModule(mod) {
-  const store = await loader.readStore();
-  store.removed = store.removed.filter((f) => f !== mod.file);
-  if (!store.modules[mod.file]) {
-    let disk = null;
-    try {
-      disk = await loader.importDisk(mod.file);
-    } catch {
-      disk = null;
-    }
-    if (!disk) {
-      const response = await fetch(moduleFileUrl(mod));
-      if (!response.ok) throw new Error(`download failed (${response.status})`);
-      const text = await response.text();
-      if (!text || !/export/.test(text)) throw new Error("the downloaded file looks invalid");
-      store.modules[mod.file] = { code: text, version: loader.parseVersion(text) ?? mod.version ?? "0.0.0", updatedAt: Date.now() };
-    }
-  }
-  await loader.writeStore(store);
-  installedFiles.add(mod.file);
-  // The module is in place but only the next client start loads it; the DONE button restarts.
+  state.installed[mod.id] = true;
+  delete state.enabled[mod.id]; // a fresh install starts enabled, like a new copy would
+  saveState();
+  // The plugin is installed but only the next client start loads it; the DONE button restarts.
   pendingReload = true;
   refreshPanel();
 }
 
-/** Turns the plugin off first so it stops running, then removes it. No restart needed. */
+/** Turns the plugin off first so it stops running, then uninstalls it. No restart needed. */
 async function uninstallModule(mod) {
-  setPluginEnabled(mod.id, false); // off first, so it stops running before it goes away
-  unregisterPlugin(mod.id);
-  delete state[mod.id];
+  unregisterPlugin(mod.id); // off first: it stops running before the state goes away
+  state.enabled[mod.id] = false;
+  state.installed[mod.id] = false;
   saveState();
-  await dropModule(mod.file);
   refreshPanel();
 }
 
@@ -354,88 +333,63 @@ function buildUpdateWindow() {
   };
 }
 
-async function runUpdate(modules) {
+/**
+ * Downloads the new package version into the browser cache with a progress window, pins it and
+ * restarts the client at a safe moment, so the next start runs the new version.
+ */
+async function runUpdate(target) {
   const win = buildUpdateWindow();
   (document.body ?? document.documentElement).append(win.root);
-  for (let i = 0; i < modules.length; i++) {
-    const mod = modules[i];
-    win.setStatus(`Downloading ${mod.name}...`);
-    win.setProgress(i / modules.length);
+  const files = [{ name: "Perfectionism Core", file: CORE_FILE }, ...BUNDLED_MODULES.filter((m) => !m.core)];
+  for (let i = 0; i < files.length; i++) {
+    win.setStatus(`Downloading ${files[i].name}...`);
+    win.setProgress(i / files.length);
     try {
-      const response = await fetch(moduleFileUrl(mod));
+      const response = await fetch(`${CDN}/${PKG}@${target}/${files[i].file}`);
       if (!response.ok) throw new Error(`download failed (${response.status})`);
       const text = await response.text();
       if (!text || !/export/.test(text)) throw new Error("the downloaded file looks invalid");
-      await putModule(mod.file, text, mod.version);
     } catch (error) {
-      logError(`could not update ${mod.name}.`, error);
-      win.fail(`Could not update ${mod.name}. It will be retried on the next client start.`);
+      logError(`could not update to ${target}.`, error);
+      win.fail(`Could not update to ${target}. It will be retried on the next client start.`);
       return;
     }
   }
   win.setProgress(1);
+  runningVersion = target;
+  saveState();
   win.setStatus("Update installed. Restarting the client...");
   reloadWhenSafe();
 }
 
+/** Checks npm for a newer package version and installs it. */
 async function checkForUpdates() {
-  const manifest = await fetchManifest();
-  if (!manifest) return;
-  availableModules = manifest;
-  await loadModules(); // manifest modules that are on disk or downloaded but not loaded yet
-  refreshPanel();
-  const store = await loader.readStore();
-  const outdated = [];
-  for (const mod of manifest) {
-    if (store.removed.includes(mod.file)) continue; // uninstalled on purpose
-    const local = await resolveLocalVersion(mod);
-    if (local !== null && loader.newerVersion(mod.version, local)) outdated.push(mod);
+  if (!/^\d+\.\d+\.\d+$/.test(runningVersion)) return; // loaded through the @latest fallback
+  let target = null;
+  try {
+    const response = await fetch(REGISTRY_URL, { headers: { Accept: "application/json" }, cache: "no-store" });
+    if (response.ok) target = (await response.json())?.version ?? null;
+  } catch {
+    return;
   }
-  if (outdated.length) runUpdate(outdated);
+  if (target && newerVersion(target, runningVersion)) runUpdate(target);
 }
 
 /**
- * Loads every known plugin module (index.js and this core file are not plugins): a downloaded copy
- * in the store runs instead of the file on disk, unless a manually replaced file is newer. Known
- * modules are the manifest's and the bundled ones plus the downloaded ones — this Pengu has no way
- * to list the plugin folder. Uninstalled modules are skipped.
+ * Loads every installed plugin from the npm package (this core file is not a plugin). Plugins
+ * added in later releases show an Install button first; uninstalled ones are skipped.
  */
 async function loadModules() {
-  const store = await loader.readStore();
-  const candidates = new Set([...availableModules.map((m) => m.file), ...Object.keys(store.modules)]);
-  for (const name of candidates) {
-    if (!name.endsWith(".js") || name === ENTRY_FILE || name === CORE_FILE) continue;
-    if (resolved.has(name) || store.removed.includes(name)) continue;
-    const mod = await resolveModule(name, store);
-    if (!mod) continue;
-    resolved.set(name, mod);
-    installedFiles.add(name);
+  for (const mod of BUNDLED_MODULES) {
+    if (mod.core || resolved.has(mod.id) || !isInstalled(mod)) continue;
     try {
-      mod.init?.();
+      const plugin = await importModule(moduleUrl(mod.file));
+      resolved.set(mod.id, plugin);
+      plugin.init?.();
     } catch (error) {
-      logError(`could not load ${name}.`, error);
+      logError(`could not load ${mod.name}.`, error);
     }
   }
-}
-
-/** A plugin module: the downloaded copy, unless the file on disk is a newer version. */
-async function resolveModule(name, store) {
-  let disk = null;
-  try {
-    disk = await loader.importDisk(name);
-  } catch {
-    disk = null;
-  }
-  const overlay = store.modules[name];
-  if (!overlay?.code) return disk;
-  let downloaded = null;
-  try {
-    downloaded = await loader.evaluateModule(overlay.code);
-  } catch (error) {
-    logError(`the downloaded copy of ${name} is broken.`, error);
-  }
-  if (disk && downloaded && loader.newerVersion(disk.version, overlay.version)) return disk;
-  return downloaded ?? disk;
 }
 
 /* ---------- Shared DOM watching (one observer for every plugin) ---------- */
@@ -644,11 +598,12 @@ function buildCard(mod) {
   info.append(name);
   if (mod.description) info.append(el("div", "perf-desc", mod.description));
 
+  // The toggle and the install / uninstall button cluster together in the box's top-right corner.
   const actions = el("div", "perf-actions");
   if (installed) actions.append(buildToggle(mod));
+  actions.append(installed ? buildUninstallButton(mod) : buildInstallButton(mod));
 
-  // The install / uninstall button sits in the plugin box's top-right corner.
-  card.append(info, actions, installed ? buildUninstallButton(mod) : buildInstallButton(mod));
+  card.append(info, actions);
   return card;
 }
 
@@ -842,20 +797,23 @@ const utils = {
  * Pengu entry point. Loading the file a second time is a no-op. Plugins can wait for the utils with:
  *   window.PerfectionistUtils ?? await new Promise(r => addEventListener("perfectionist:utils-ready", () => r(window.PerfectionistUtils), { once: true }))
  */
-export function init(context, loaderProvided) {
+export async function init(context, coordsProvided) {
   if (window.PerfectionistUtils) return;
-  if (loaderProvided) loader = loaderProvided;
+  coords = coordsProvided ?? null;
+  runningVersion = coords?.version || version;
+
+  await loadState();
+  saveState(); // pin this version for the loader's next import
 
   socket = context?.socket ?? null;
   window.PerfectionistUtils = utils;
   installSettingsTab();
   window.dispatchEvent(new CustomEvent(READY_EVENT, { detail: utils }));
-}
 
-/** Pengu folder entry: index.js calls this after init with the module loader. */
-export function boot(context, loaderProvided) {
-  if (loaderProvided) loader = loaderProvided;
-  return loadModules()
-    .then(() => checkForUpdates())
-    .catch((error) => logError("startup failed.", error));
+  try {
+    await loadModules();
+    checkForUpdates(); // runs in the background; it restarts the client when it installs an update
+  } catch (error) {
+    logError("startup failed.", error);
+  }
 }
