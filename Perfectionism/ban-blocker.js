@@ -10,6 +10,8 @@
  * Requires perfectionist-utils.js. Toggle it in the "Perfectionism" settings tab.
  */
 
+export const version = "3.4.0";
+
 const PLUGIN_ID = "ban-blocker";
 const STYLE_ID = "perfectionist-ban-blocker-style";
 const BTN_CLASS = "bb-toggle";
@@ -596,7 +598,7 @@ export function init() {
       id: PLUGIN_ID,
       name: "Ban Blocker",
       description: "During bans, blocking a teammate instantly claims the champion they hover to ban.",
-      version: "3.4.0",
+      version,
       defaultEnabled: true,
       onEnable,
       onDisable,

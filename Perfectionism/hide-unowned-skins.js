@@ -9,6 +9,8 @@
  * Requires perfectionist-utils.js.
  */
 
+export const version = "2.1.0";
+
 const PLUGIN_ID = "hide-unowned-skins";
 const STYLE_ID = "perfectionist-hide-unowned-skins-style";
 const HIDDEN_CLASS = "perf-unowned-skin-hidden";
@@ -623,7 +625,7 @@ export function init() {
       id: PLUGIN_ID,
       name: "Hide Unowned Skins",
       description: "In champion select, only shows the skins you own for the picked champion.",
-      version: "2.1.0",
+      version,
       defaultEnabled: true,
       onEnable,
       onDisable,
