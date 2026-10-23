@@ -33,7 +33,7 @@ const BUNDLED_MODULES = [
     id: "hide-unowned-skins",
     file: "hide-unowned-skins.js",
     name: "Hide Unowned Skins",
-    version: "2.1.0",
+    version: "2.1.1",
     description: "In champion select, only shows the skins you own for the picked champion.",
   },
 ];
@@ -315,6 +315,7 @@ async function runUpdate(target) {
     win.setProgress(i / files.length);
     try {
       const response = await fetch(`${CDN}/${PKG}@${target}/${files[i].file}`);
+      if (response.status === 404 && files[i].id) continue;
       if (!response.ok) throw new Error(`download failed (${response.status})`);
       const text = await response.text();
       if (!text || !/export/.test(text)) throw new Error("the downloaded file looks invalid");

@@ -1,4 +1,4 @@
-export const version = "2.1.0";
+export const version = "2.1.1";
 
 const PLUGIN_ID = "hide-unowned-skins";
 const STYLE_ID = "perfectionist-hide-unowned-skins-style";
@@ -34,7 +34,7 @@ let clientSkinOrder = [];
 function readDefaultEnabled() {
   try {
     const saved = JSON.parse(localStorage.getItem(STATE_KEY) || "{}");
-    return saved[PLUGIN_ID] !== false;
+    return saved.enabled?.[PLUGIN_ID] !== false;
   } catch {
     return true;
   }
