@@ -40,6 +40,19 @@ Built for [Pengu Loader](https://pengu.lol)
       No more scrolling past skins you can't use.
     </td>
   </tr>
+  <tr>
+    <td>&nbsp;</td>
+  </tr>
+  <tr>
+    <th align="left">🔓 Unlock Profile Skins</th>
+  </tr>
+  <tr>
+    <td>
+      In the <b>Set profile background</b> window, every skin shows as unlocked, even the event skins (Signature).
+      <br><br>
+      Browse the full list and pick any skin you like as your profile background.
+    </td>
+  </tr>
 </table>
 
 ## Install

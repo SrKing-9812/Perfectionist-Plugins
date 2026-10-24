@@ -1,4 +1,4 @@
-export const version = "2.2.0";
+export const version = "2.3.0";
 
 const PLUGIN_ID = "hide-unowned-skins";
 const STYLE_ID = "perfectionist-hide-unowned-skins-style";
@@ -12,6 +12,7 @@ const CURRENT_SUMMONER_URI = "/lol-summoner/v1/current-summoner";
 const SUMMONER_TTL = 10 * 60 * 1000;
 const INVENTORY_TTL = 60 * 1000;
 const REFRESH_DEBOUNCE_MS = 350;
+const REPACK_SETTLE_MS = 120;
 const RETRY_MS = 5000;
 const STATE_KEY = "perfectionist-plugins:state";
 
@@ -271,18 +272,32 @@ let sessionMisses = 0;
 let championMisses = 0;
 let renderObserver = null;
 const repackOriginals = new Map();
+const skinSuffixCache = new Map();
+let repackTimer = null;
 let removeStyle = null;
 
 function logError(scope, error) {
   console.error(`[Perfectionist] Hide Unowned Skins: ${scope}`, error);
 }
 
+function skinSuffixOf(text) {
+  const numbered = text.match(/Skins\/Skin(\d+)\//i) ?? text.match(/Skin(\d+)\//);
+  if (numbered) return Number(numbered[1]);
+  return /Skins\/Base\//i.test(text) ? 0 : null;
+}
+
 function readSkinId(item) {
-  const html = item.innerHTML;
-  const numbered = html.match(/Skins\/Skin(\d+)\//i) ?? html.match(/Skin(\d+)\//);
-  if (numbered) return currentChampionId * 1000 + Number(numbered[1]);
-  if (/Skins\/Base\//i.test(html)) return currentChampionId * 1000;
-  return null;
+  for (const img of item.querySelectorAll("img[src]")) {
+    const src = img.getAttribute("src");
+    let suffix = skinSuffixCache.get(src);
+    if (suffix === undefined) {
+      suffix = skinSuffixOf(src);
+      skinSuffixCache.set(src, suffix);
+    }
+    if (suffix !== null) return currentChampionId * 1000 + suffix;
+  }
+  const suffix = skinSuffixOf(item.innerHTML);
+  return suffix === null ? null : currentChampionId * 1000 + suffix;
 }
 
 function hideTargetFor(item) {
@@ -297,10 +312,17 @@ function hideTargetFor(item) {
 
 function repackVisibleItems(items) {
   const visible = items.filter((item) => !item.classList.contains(HIDDEN_CLASS));
-  if (visible.length < 2) return;
+  if (visible.length < 2) {
+    restoreRepack();
+    return;
+  }
 
   const selectedIndex = items.findIndex((item) => item.classList.contains("skin-selection-item-selected"));
-  const anchor = selectedIndex >= 0 ? items[selectedIndex] : visible[Math.floor(visible.length / 2)];
+  let anchor = selectedIndex >= 0 ? items[selectedIndex] : null;
+  if (!anchor && selectedSkinId !== null) {
+    anchor = visible.find((item) => readSkinId(item) === selectedSkinId) ?? null;
+  }
+  if (!anchor) anchor = visible[Math.floor(visible.length / 2)];
   const anchorDomIndex = items.indexOf(anchor);
 
   const widthOf = (item) => item.getBoundingClientRect().width || (item === anchor ? 117 : 73);
@@ -378,8 +400,26 @@ function applyAll() {
     else if (dotsHidden === 0 && dotList.hasAttribute("data-perf-dots")) dotList.removeAttribute("data-perf-dots");
   }
 
-  if (ownedSkinIds !== null && hidden > 0) repackVisibleItems(items);
+  if (ownedSkinIds !== null && hidden > 0) scheduleRepack();
   else if (hidden === 0) restoreRepack();
+}
+
+function scheduleRepack() {
+  clearTimeout(repackTimer);
+  repackTimer = setTimeout(runRepack, REPACK_SETTLE_MS);
+}
+
+function runRepack() {
+  repackTimer = null;
+  renderObserver?.disconnect();
+  try {
+    const items = [...document.querySelectorAll(SKIN_ITEM_SELECTOR)];
+    const hidden = items.some((item) => item.classList.contains(HIDDEN_CLASS));
+    if (ownedSkinIds !== null && hidden) repackVisibleItems(items);
+    else restoreRepack();
+  } finally {
+    renderObserver?.observe(document.documentElement ?? document, OBSERVER_OPTIONS);
+  }
 }
 
 function applyAllGuarded() {
@@ -565,6 +605,8 @@ function onDisable() {
   unsubscribe = null;
   clearTimeout(refreshTimer);
   refreshTimer = null;
+  clearTimeout(repackTimer);
+  repackTimer = null;
   renderObserver?.disconnect();
   removeStyle?.();
   renderObserver = null;

@@ -6,7 +6,7 @@ const PANEL_ID = "perfectionist-plugins-panel";
 const STYLE_ID = "perfectionist-plugins-style";
 const TAB_TITLE = "Perfectionism";
 
-export const version = "1.0.4";
+export const version = "1.1.0";
 
 const PKG = "perfectionist-plugins";
 const CDN = "https://cdn.jsdelivr.net/npm";
@@ -35,6 +35,13 @@ const BUNDLED_MODULES = [
     name: "Hide Unowned Skins",
     version: "2.2.0",
     description: "In champion select, only shows the skins you own for the picked champion.",
+  },
+  {
+    id: "unlock-profile-skins",
+    file: "unlock-profile-skins.js",
+    name: "Unlock Profile Skins",
+    version: "1.0.0",
+    description: "Unlocks every skin in the Set profile background window.",
   },
 ];
 

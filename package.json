@@ -1,6 +1,6 @@
 {
   "name": "perfectionist-plugins",
-  "version": "1.0.4",
+  "version": "1.2.0",
   "description": "Small plugins that fix the annoying parts of League of Legends champ select. Built for Pengu Loader.",
   "type": "module",
   "main": "perfectionist-utils.js",
@@ -8,12 +8,14 @@
     ".": "./perfectionist-utils.js",
     "./perfectionist-utils.js": "./perfectionist-utils.js",
     "./ban-blocker.js": "./ban-blocker.js",
-    "./hide-unowned-skins.js": "./hide-unowned-skins.js"
+    "./hide-unowned-skins.js": "./hide-unowned-skins.js",
+    "./unlock-profile-skins.js": "./unlock-profile-skins.js"
   },
   "files": [
     "perfectionist-utils.js",
     "ban-blocker.js",
-    "hide-unowned-skins.js"
+    "hide-unowned-skins.js",
+    "unlock-profile-skins.js"
   ],
   "repository": {
     "type": "git",
