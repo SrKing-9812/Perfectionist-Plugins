@@ -1,4 +1,4 @@
-export const version = "2.1.1";
+export const version = "2.2.0";
 
 const PLUGIN_ID = "hide-unowned-skins";
 const STYLE_ID = "perfectionist-hide-unowned-skins-style";
@@ -11,7 +11,7 @@ const CAROUSEL_URI = "/lol-champ-select/v1/skin-carousel-skins";
 const CURRENT_SUMMONER_URI = "/lol-summoner/v1/current-summoner";
 const SUMMONER_TTL = 10 * 60 * 1000;
 const INVENTORY_TTL = 60 * 1000;
-const SESSION_POLL_MS = 1000;
+const REFRESH_DEBOUNCE_MS = 350;
 const RETRY_MS = 5000;
 const STATE_KEY = "perfectionist-plugins:state";
 
@@ -57,6 +57,7 @@ function filterSkinList(list) {
 }
 
 function recordClientOrder(list) {
+  scheduleRefresh();
   if (Array.isArray(list)) {
     clientSkinOrder = list.map((skin) => (skin && typeof skin.id === "number" ? skin.id : null)).filter((id) => id !== null);
   }
@@ -262,7 +263,8 @@ let carouselOrder = [];
 let selectedSkinId = null;
 let failure = null;
 let requestToken = 0;
-let pollTimer = null;
+let refreshTimer = null;
+let unsubscribe = null;
 let pollInFlight = false;
 let selectInFlight = false;
 let sessionMisses = 0;
@@ -452,7 +454,7 @@ function resetState() {
   failure = null;
   sessionMisses = 0;
   championMisses = 0;
-  applyAll();
+  applyAllGuarded();
 }
 
 function loadChampion(championId) {
@@ -467,7 +469,7 @@ function loadChampion(championId) {
       if (token !== requestToken) return;
       ownedSkinIds = owned;
       carouselOrder = carouselIds.length > 0 ? carouselIds : inventoryOrder;
-      applyAll();
+      applyAllGuarded();
     },
     (error) => {
       if (token !== requestToken) return;
@@ -507,7 +509,23 @@ function updateForSession(session, selection) {
     }
   }
 
-  applyAll();
+  applyAllGuarded();
+}
+
+function scheduleRefresh() {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(pollSession, REFRESH_DEBOUNCE_MS);
+}
+
+function onSessionPush(raw) {
+  const msg = raw ?? {};
+  if (msg.eventType === "Delete") {
+    resetState();
+    return;
+  }
+  const s = msg.data ?? msg;
+  if (!s?.myTeam) return;
+  updateForSession(s, null);
 }
 
 async function pollSession() {
@@ -515,11 +533,9 @@ async function pollSession() {
   ensureSourceFilter();
   pollInFlight = true;
   try {
-    const [session, selection] = await Promise.all([
-      api.lcu.get(SESSION_URI),
-      api.lcu.get(SELECTION_URI).catch(() => null),
-    ]);
+    const session = await api.lcu.get(SESSION_URI);
     sessionMisses = 0;
+    const selection = await api.lcu.get(SELECTION_URI).catch(() => null);
     updateForSession(session, selection);
   } catch {
     sessionMisses++;
@@ -534,16 +550,21 @@ function onEnable(utils) {
   filterActive = true;
   removeStyle = api.addStyle(STYLE_ID, CSS);
 
-  renderObserver = new MutationObserver(() => applyAllGuarded());
+  renderObserver = new MutationObserver(() => {
+    applyAllGuarded();
+    if (document.querySelector(SKIN_ITEM_SELECTOR)) scheduleRefresh();
+  });
   renderObserver.observe(document.documentElement ?? document, OBSERVER_OPTIONS);
 
-  pollTimer = setInterval(pollSession, SESSION_POLL_MS);
+  unsubscribe = api.subscribe(SESSION_URI, onSessionPush);
   pollSession();
 }
 
 function onDisable() {
-  clearInterval(pollTimer);
-  pollTimer = null;
+  unsubscribe?.();
+  unsubscribe = null;
+  clearTimeout(refreshTimer);
+  refreshTimer = null;
   renderObserver?.disconnect();
   removeStyle?.();
   renderObserver = null;

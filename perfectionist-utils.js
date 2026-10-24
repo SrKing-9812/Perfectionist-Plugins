@@ -33,7 +33,7 @@ const BUNDLED_MODULES = [
     id: "hide-unowned-skins",
     file: "hide-unowned-skins.js",
     name: "Hide Unowned Skins",
-    version: "2.1.1",
+    version: "2.2.0",
     description: "In champion select, only shows the skins you own for the picked champion.",
   },
 ];
@@ -112,11 +112,6 @@ async function loadState() {
   if (saved?.installed && typeof saved.installed === "object") {
     state = { installed: saved.installed, enabled: saved.enabled ?? {} };
     return;
-  }
-  for (const mod of BUNDLED_MODULES) {
-    if (mod.core) continue;
-    state.installed[mod.id] = true;
-    state.enabled[mod.id] = mod.defaultEnabled ?? true;
   }
   saveState();
 }
