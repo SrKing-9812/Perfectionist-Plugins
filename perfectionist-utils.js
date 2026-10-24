@@ -6,7 +6,7 @@ const PANEL_ID = "perfectionist-plugins-panel";
 const STYLE_ID = "perfectionist-plugins-style";
 const TAB_TITLE = "Perfectionism";
 
-export const version = "1.0.1";
+export const version = "1.0.4";
 
 const PKG = "perfectionist-plugins";
 const CDN = "https://cdn.jsdelivr.net/npm";
@@ -26,7 +26,7 @@ const BUNDLED_MODULES = [
     id: "ban-blocker",
     file: "ban-blocker.js",
     name: "Ban Blocker",
-    version: "3.4.0",
+    version: "3.4.2",
     description: "During bans, blocking a teammate instantly claims the champion they hover to ban.",
   },
   {
@@ -123,8 +123,12 @@ function saveState() {
     enabled: state.enabled,
   };
   try {
-    if (typeof DataStore !== "undefined") DataStore.set(STATE_KEY, record);
     localStorage.setItem(STATE_KEY, JSON.stringify(record));
+  } catch (error) {
+    console.error("[Perfectionism] Could not save plugin state.", error);
+  }
+  try {
+    if (typeof DataStore !== "undefined") DataStore.set(STATE_KEY, record);
   } catch (error) {
     console.error("[Perfectionism] Could not save plugin state.", error);
   }

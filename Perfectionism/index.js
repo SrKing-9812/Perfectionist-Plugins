@@ -29,7 +29,7 @@ function runCachedPlugins() {
     const cache = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
     const saved = JSON.parse(localStorage.getItem(STATE_KEY) || "null");
     for (const [id, source] of Object.entries(cache?.files ?? {})) {
-      if (saved?.installed?.[id] !== true) continue;
+      if (saved && saved.installed?.[id] !== true) continue;
       runPluginSource(id, source);
     }
   } catch (error) {

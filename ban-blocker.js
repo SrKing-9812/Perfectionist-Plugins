@@ -1,4 +1,4 @@
-export const version = "3.4.0";
+export const version = "3.4.2";
 
 const PLUGIN_ID = "ban-blocker";
 const STYLE_ID = "perfectionist-ban-blocker-style";
@@ -13,6 +13,7 @@ const FAIL_COOLDOWN_MAX_MS = 30000;
 const POLL_MS = 40;
 const ENSURE_MS = 300;
 const DETECT_RETRY_MS = 2000;
+const GONE_RESET_MS = 1500;
 
 const BAN_GLYPH_SVG =
   "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'>" +
@@ -58,11 +59,14 @@ let ensureTimer = null;
 let detectTimer = null;
 let refreshTimer = null;
 let pumpTimer = null;
+let goneTimer = null;
 let observer = null;
 let pollInFlight = false;
 let uiScheduled = false;
 
 const enabled = new Map();
+const alias = new Map();
+const fetchedNames = new Set();
 const playerNames = new Map();
 const cellToPlayer = new Map();
 const buttons = new Map();
@@ -96,13 +100,62 @@ function isPicked(members, champ) {
   return (members ?? []).some((p) => p.championId === champ && p.completed);
 }
 
-function isBlocked(id) {
-  return enabled.get(id) === true;
+function canonOf(id) {
+  return (id != null && alias.get(id)) || id;
 }
 
-function playerId(p) {
+function isBlocked(id) {
+  return enabled.get(canonOf(id)) === true;
+}
+
+function isWeakKey(k) {
+  return typeof k === "string" && k.startsWith("cell:");
+}
+
+function payloadName(p) {
+  return norm(`${p?.gameName ?? ""}${p?.tagLine ?? ""}`) || norm(p?.summonerName) || "";
+}
+
+function keyOf(p) {
   if (typeof p === "number") return p;
-  return p?.summonerId ?? p?.puuid ?? null;
+  const strong = p?.summonerId || p?.puuid;
+  if (strong) return strong;
+  const n = payloadName(p);
+  if (n) return `name:${n}`;
+  return p?.cellId != null ? `cell:${p.cellId}` : null;
+}
+
+function linkPlayer(p, rowName, cellId) {
+  const strong = typeof p === "number" ? p : p?.summonerId || p?.puuid;
+  const pn = typeof p === "number" ? "" : payloadName(p);
+  const rn = norm(rowName);
+  const keys = [];
+  if (strong) keys.push(strong);
+  if (pn) keys.push(`name:${pn}`);
+  if (rn && rn !== pn) keys.push(`name:${rn}`);
+  const weak = cellId != null ? `cell:${cellId}` : null;
+
+  let root = null;
+  for (const k of keys) {
+    const r = alias.get(k);
+    if (r != null) {
+      root = r;
+      break;
+    }
+  }
+  if (root == null && keys.length) {
+    root = keys[0];
+    const prev = weak ? alias.get(weak) : null;
+    if (prev != null && isWeakKey(prev) && enabled.has(prev)) {
+      if (!enabled.has(root)) enabled.set(root, enabled.get(prev));
+      enabled.delete(prev);
+    }
+  }
+  if (root == null) root = (weak && alias.get(weak)) || weak;
+  if (root == null) return null;
+  for (const k of keys) alias.set(k, root);
+  if (weak) alias.set(weak, root);
+  return root;
 }
 
 function banPending(s) {
@@ -149,7 +202,10 @@ function decide(s) {
   const me = s?.localPlayerCellId;
 
   cellToPlayer.clear();
-  for (const p of m) cellToPlayer.set(p.cellId, playerId(p));
+  for (const p of m) {
+    const row = rows.find((r) => r.slotId === p.cellId);
+    cellToPlayer.set(p.cellId, linkPlayer(p, row?.name, p.cellId));
+  }
 
   let myPick = null;
   for (const a of actions) {
@@ -160,7 +216,7 @@ function decide(s) {
   }
   myActionId = myPick ? myPick.id : null;
 
-  const blockedCells = new Set(m.filter((p) => isBlocked(playerId(p))).map((p) => p.cellId));
+  const blockedCells = new Set(m.filter((p) => isBlocked(cellToPlayer.get(p.cellId))).map((p) => p.cellId));
 
   let threat = 0;
   for (const a of actions) {
@@ -193,6 +249,15 @@ function onSessionGone() {
   goneAway = true;
   uiVisible = false;
   removeButtons();
+  if (!goneTimer) {
+    goneTimer = setTimeout(() => {
+      goneTimer = null;
+      enabled.clear();
+      alias.clear();
+      playerNames.clear();
+      fetchedNames.clear();
+    }, GONE_RESET_MS);
+  }
 }
 
 function onSession(raw) {
@@ -208,6 +273,8 @@ function onSession(raw) {
       return;
     }
     if (!s?.myTeam) return;
+    clearTimeout(goneTimer);
+    goneTimer = null;
     goneAway = false;
     lastSession = s;
 
@@ -256,29 +323,27 @@ function getRows() {
 }
 
 function ensureName(cell) {
-  const id = playerId(cell);
-  if (id == null || playerNames.has(id)) return;
-  playerNames.set(id, []);
+  const strong = cell?.summonerId || cell?.puuid;
+  if (!strong || fetchedNames.has(strong)) return;
   const get = api?.lcu?.get;
-  if (!get) {
-    playerNames.delete(id);
-    return;
-  }
-  const byPuuid = typeof id === "string" && id.length > 20;
-  const path = byPuuid ? `/lol-summoner/v2/summoners/puuid/${id}` : `/lol-summoner/v1/summoners/${id}`;
+  if (!get) return;
+  fetchedNames.add(strong);
+  const byPuuid = typeof strong === "string" && strong.length > 20;
+  const path = byPuuid ? `/lol-summoner/v2/summoners/puuid/${strong}` : `/lol-summoner/v1/summoners/${strong}`;
   get(path)
     .then((data) => {
       const names = [norm(data?.displayName), norm(data?.gameName)].filter(Boolean);
-      if (names.length) playerNames.set(id, names);
-      else playerNames.delete(id);
+      if (!names.length) return;
+      const root = canonOf(strong);
+      playerNames.set(root, [...new Set([...(playerNames.get(root) ?? []), ...names])]);
     })
-    .catch(() => playerNames.delete(id));
+    .catch(() => fetchedNames.delete(strong));
 }
 
 function nameMatches(rowName, id) {
   const rn = norm(rowName);
   if (!rn) return false;
-  return (playerNames.get(id) ?? []).some(
+  return (playerNames.get(canonOf(id)) ?? []).some(
     (n) => n === rn || (n.length >= 3 && rn.length >= 3 && (n.startsWith(rn) || rn.startsWith(n))),
   );
 }
@@ -292,8 +357,13 @@ function bindRowsToTeam(session) {
   for (const r of list) {
     const cell =
       (r.slotId != null ? cells.find((c) => c.cellId === r.slotId) : null) ??
-      cells.find((c) => nameMatches(r.name, playerId(c)));
-    r.player = cell ? playerId(cell) : null;
+      cells.find((c) => nameMatches(r.name, keyOf(c)));
+    if (cell) {
+      r.player = linkPlayer(cell, r.name, cell.cellId);
+      cellToPlayer.set(cell.cellId, r.player);
+    } else {
+      r.player = null;
+    }
   }
 }
 
@@ -303,14 +373,18 @@ function stopEvent(e) {
   e.preventDefault();
 }
 
+function playerForBadge(btn) {
+  const rowEl = btn.closest(".summoner-object");
+  const r = rowEl ? rows.find((x) => x.el === rowEl) : rows[Number(btn.dataset.slot)];
+  const byCell = btn.dataset.cell ? cellToPlayer.get(Number(btn.dataset.cell)) ?? null : null;
+  return canonOf(byCell ?? r?.player ?? null);
+}
+
 function toggle(btn) {
-  let id = btn.dataset.cell ? (cellToPlayer.get(Number(btn.dataset.cell)) ?? null) : null;
-  if (id == null) {
-    if (lastSession) bindRowsToTeam(lastSession);
-    const list = getRows();
-    const rowEl = btn.closest(".summoner-object");
-    const r = list.find((x) => x.el === rowEl) ?? list[Number(btn.dataset.slot)];
-    id = r?.player ?? null;
+  let id = playerForBadge(btn);
+  if (id == null && lastSession) {
+    bindRowsToTeam(lastSession);
+    id = playerForBadge(btn);
   }
   if (id == null) return;
   const myCell = lastSession?.localPlayerCellId;
@@ -386,7 +460,7 @@ function ensureButtons() {
 function renderButtons() {
   const hasSession = !!lastSession?.myTeam;
   for (const [, btn] of buttons) {
-    const id = btn.dataset.cell ? (cellToPlayer.get(Number(btn.dataset.cell)) ?? null) : null;
+    const id = playerForBadge(btn);
     const on = id != null && isBlocked(id);
     btn.classList.toggle("on", on);
     btn.classList.toggle("unresolved", id == null && hasSession);
@@ -505,7 +579,8 @@ function onDisable() {
   clearTimeout(refreshTimer);
   clearTimeout(detectTimer);
   clearTimeout(pumpTimer);
-  pollTimer = ensureTimer = refreshTimer = detectTimer = pumpTimer = null;
+  clearTimeout(goneTimer);
+  pollTimer = ensureTimer = refreshTimer = detectTimer = pumpTimer = goneTimer = null;
   observer?.disconnect();
   observer = null;
 
@@ -518,6 +593,8 @@ function onDisable() {
   cellToPlayer.clear();
   enabled.clear();
   playerNames.clear();
+  alias.clear();
+  fetchedNames.clear();
   lastSession = null;
   rows = [];
   removeButtons();
