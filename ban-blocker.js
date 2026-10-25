@@ -1,4 +1,4 @@
-export const version = "3.4.2";
+export const version = "3.5.0";
 
 const PLUGIN_ID = "ban-blocker";
 const STYLE_ID = "perfectionist-ban-blocker-style";
@@ -8,11 +8,11 @@ const SESSION_URI = "/lol-champ-select/v1/session";
 const RESEND_AFTER_MS = 150;
 const RESCHEDULE_MS = RESEND_AFTER_MS + 20;
 const MAX_IN_FLIGHT = 3;
-const FAIL_COOLDOWN_MS = 1200;
-const FAIL_COOLDOWN_MAX_MS = 30000;
-const POLL_MS = 40;
+const FAIL_COOLDOWN_MS = 400;
+const FAIL_COOLDOWN_MAX_MS = 3000;
+const POLL_MS = 500;
 const ENSURE_MS = 300;
-const DETECT_RETRY_MS = 2000;
+const DETECT_RETRY_MS = 250;
 const GONE_RESET_MS = 1500;
 
 const BAN_GLYPH_SVG =
@@ -56,13 +56,13 @@ let removeStyle = null;
 let unsubscribe = null;
 let pollTimer = null;
 let ensureTimer = null;
-let detectTimer = null;
 let refreshTimer = null;
 let pumpTimer = null;
 let goneTimer = null;
 let observer = null;
 let pollInFlight = false;
 let uiScheduled = false;
+let lastDetect = -Infinity;
 
 const enabled = new Map();
 const alias = new Map();
@@ -172,24 +172,29 @@ function pump() {
 }
 
 function fire(id, champ) {
-  const send = api?.lcu?.send;
-  if (!send || id == null) return;
+  if (id == null) return;
   sent = champ;
   sentAt = performance.now();
   inFlight++;
   clearTimeout(pumpTimer);
   pumpTimer = setTimeout(pump, RESCHEDULE_MS);
-  send("PATCH", `${SESSION_URI}/actions/${id}`, { championId: champ })
-    .then(() => {
-      failCount.delete(champ);
-    })
-    .catch(() => {
+  fetch(`${SESSION_URI}/actions/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ championId: champ }),
+  })
+    .then((r) => {
+      if (r.ok) {
+        failCount.delete(champ);
+        return;
+      }
       const n = failCount.get(champ) ?? 0;
       failCount.set(champ, n + 1);
       failedUntil.set(champ, performance.now() + Math.min(FAIL_COOLDOWN_MS * 2 ** n, FAIL_COOLDOWN_MAX_MS));
       if (target === champ) target = undefined;
       if (sent === champ) sent = 0;
     })
+    .catch(() => {})
     .finally(() => {
       inFlight--;
       pump();
@@ -314,11 +319,14 @@ function detectRows() {
 }
 
 function getRows() {
+  const connected = rows.length > 0 && rows.every((r) => r.el.isConnected);
+  if (connected) return rows;
+  const now = performance.now();
+  if (rows.length === 0 && now - lastDetect < DETECT_RETRY_MS) return rows;
+  lastDetect = now;
   const found = detectRows();
   if (found.length) rows = found;
   else if (!document.querySelector("div.summoner-object")) rows = [];
-  clearTimeout(detectTimer);
-  detectTimer = setTimeout(getRows, DETECT_RETRY_MS);
   return rows;
 }
 
@@ -536,13 +544,7 @@ function onEnable(utils) {
   }, ENSURE_MS);
 
   try {
-    observer = new MutationObserver(() => {
-      try {
-        update();
-      } catch (err) {
-        logError("ui update failed.", err);
-      }
-    });
+    observer = new MutationObserver(() => scheduleUi());
     observer.observe(document.body, { childList: true, subtree: true });
   } catch (err) {
     logError("observer setup failed.", err);
@@ -577,10 +579,9 @@ function onDisable() {
   clearInterval(pollTimer);
   clearInterval(ensureTimer);
   clearTimeout(refreshTimer);
-  clearTimeout(detectTimer);
   clearTimeout(pumpTimer);
   clearTimeout(goneTimer);
-  pollTimer = ensureTimer = refreshTimer = detectTimer = pumpTimer = goneTimer = null;
+  pollTimer = ensureTimer = refreshTimer = pumpTimer = goneTimer = null;
   observer?.disconnect();
   observer = null;
 
@@ -597,6 +598,7 @@ function onDisable() {
   fetchedNames.clear();
   lastSession = null;
   rows = [];
+  lastDetect = -Infinity;
   removeButtons();
 
   removeStyle?.();

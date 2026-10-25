@@ -10,3 +10,4 @@ debug-*
 *.test.*
 *.mjs
 perf-notes.md
+OG-BanBlocker.js
