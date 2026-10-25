@@ -33,7 +33,7 @@ const BUNDLED_MODULES = [
     id: "hide-unowned-skins",
     file: "hide-unowned-skins.js",
     name: "Hide Unowned Skins",
-    version: "2.3.1",
+    version: "2.3.2",
     description: "In champion select, only shows the skins you own for the picked champion.",
   },
   {

@@ -1,6 +1,6 @@
 {
   "name": "perfectionist-plugins",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Small plugins that fix the annoying parts of League of Legends champ select. Built for Pengu Loader.",
   "type": "module",
   "main": "perfectionist-utils.js",

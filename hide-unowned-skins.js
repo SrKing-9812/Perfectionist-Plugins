@@ -1,4 +1,4 @@
-export const version = "2.3.1";
+export const version = "2.3.2";
 
 const PLUGIN_ID = "hide-unowned-skins";
 const STYLE_ID = "perfectionist-hide-unowned-skins-style";
@@ -259,6 +259,7 @@ function ensureSourceFilter() {
 let api = null;
 let summonerId = null;
 let ownedSkinIds = null;
+let allSkinIds = null;
 let currentChampionId = null;
 let carouselOrder = [];
 let selectedSkinId = null;
@@ -379,7 +380,7 @@ function applyAll() {
   let hidden = 0;
   items.forEach((item) => {
     const skinId = currentChampionId === null ? null : readSkinId(item);
-    const hide = ownedSkinIds !== null && skinId !== null && !ownedSkinIds.has(skinId);
+    const hide = ownedSkinIds !== null && skinId !== null && allSkinIds !== null && allSkinIds.has(skinId) && !ownedSkinIds.has(skinId);
     if (hide) hidden++;
     item.classList.toggle(HIDDEN_CLASS, hide);
     hideTargetFor(item).classList.toggle(HIDDEN_CLASS, hide);
@@ -390,7 +391,7 @@ function applyAll() {
   const dotsMapped = carouselOrder.length > 0 && dots.length === carouselOrder.length;
   dots.forEach((dot, index) => {
     const skinId = dotsMapped ? carouselOrder[index] : undefined;
-    const hide = ownedSkinIds !== null && skinId !== undefined && !ownedSkinIds.has(skinId);
+    const hide = ownedSkinIds !== null && skinId !== undefined && allSkinIds !== null && allSkinIds.has(skinId) && !ownedSkinIds.has(skinId);
     if (hide) dotsHidden++;
     dot.classList.toggle(HIDDEN_CLASS, hide);
   });
@@ -487,6 +488,7 @@ async function selectSkin(skinId) {
 function resetState() {
   requestToken++;
   ownedSkinIds = null;
+  allSkinIds = null;
   currentChampionId = null;
   selectedSkinId = null;
   carouselOrder = [];
@@ -500,6 +502,7 @@ function resetState() {
 function loadChampion(championId) {
   currentChampionId = championId;
   ownedSkinIds = null;
+  allSkinIds = null;
   failure = null;
   clientSkinOrder = [];
   const token = ++requestToken;
@@ -508,6 +511,7 @@ function loadChampion(championId) {
     ([{ owned, order: inventoryOrder }, carouselIds]) => {
       if (token !== requestToken) return;
       ownedSkinIds = owned;
+      allSkinIds = new Set(inventoryOrder);
       carouselOrder = carouselIds.length > 0 ? carouselIds : inventoryOrder;
       applyAllGuarded();
     },
@@ -542,7 +546,8 @@ function updateForSession(session, selection) {
   const belongsToChampion = serverSkinId !== null && Math.floor(serverSkinId / 1000) === championId;
   if (!selectInFlight && belongsToChampion) selectedSkinId = serverSkinId;
 
-  if (!selectInFlight && belongsToChampion && !ownedSkinIds.has(serverSkinId)) {
+  const knownUnownedSkin = allSkinIds !== null && allSkinIds.has(serverSkinId) && !ownedSkinIds.has(serverSkinId);
+  if (!selectInFlight && knownUnownedSkin) {
     const fallback = nextOwnedSkin(ownedSkinIds, 0, 1);
     if (fallback !== null) {
       selectSkin(fallback).catch((error) => logError("could not correct the selected skin.", error));
