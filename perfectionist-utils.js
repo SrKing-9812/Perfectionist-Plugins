@@ -6,7 +6,7 @@ const PANEL_ID = "perfectionist-plugins-panel";
 const STYLE_ID = "perfectionist-plugins-style";
 const TAB_TITLE = "Perfectionism";
 
-export const version = "1.1.0";
+export const version = "1.2.0";
 
 const PKG = "perfectionist-plugins";
 const CDN = "https://cdn.jsdelivr.net/npm";
@@ -43,6 +43,13 @@ const BUNDLED_MODULES = [
     version: "1.2.0",
     description: "Unlocks every skin in the Set profile background window.",
   },
+  {
+    id: "auto-claimer",
+    file: "auto-claimer.js",
+    name: "Auto Claimer",
+    version: "1.0.0",
+    description: "Automatically claims battle pass, event and mission rewards the moment they become claimable.",
+  },
 ];
 
 const STYLE_CSS = `
@@ -77,6 +84,10 @@ const STYLE_CSS = `
 #${PANEL_ID} .perf-uninstall::after { content: ""; width: 11px; height: 11px;
   background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5' fill='none' stroke='%23c89b3c' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") center / 11px 11px no-repeat; }
 #${PANEL_ID} .perf-empty { font-size: 12px; color: #a09b8c; }
+#${PANEL_ID} .perf-opts { margin-top: 11px; display: flex; flex-direction: column; gap: 8px; }
+#${PANEL_ID} .perf-opt { display: flex; align-items: center; gap: 9px; cursor: pointer; }
+#${PANEL_ID} .perf-opt .perf-opt-label { font-size: 11px; letter-spacing: 0.3px; color: #a09b8c; }
+#${PANEL_ID} .perf-opt:hover .perf-opt-label { color: #f0e6d2; }
 
 .perf-update { position: fixed; inset: 0; z-index: 100000; display: flex; align-items: center;
   justify-content: center; background: rgba(1, 10, 19, 0.72); }
@@ -104,7 +115,7 @@ let availableModules = BUNDLED_MODULES;
 let pendingReload = false;
 let runningVersion = version;
 
-let state = { installed: {}, enabled: {} };
+let state = { installed: {}, enabled: {}, options: {} };
 
 async function loadState() {
   let saved = null;
@@ -117,7 +128,7 @@ async function loadState() {
     saved = null;
   }
   if (saved?.installed && typeof saved.installed === "object") {
-    state = { installed: saved.installed, enabled: saved.enabled ?? {} };
+    state = { installed: saved.installed, enabled: saved.enabled ?? {}, options: saved.options ?? {} };
     return;
   }
   saveState();
@@ -128,6 +139,7 @@ function saveState() {
     version: /^\d/.test(runningVersion) ? runningVersion : undefined,
     installed: state.installed,
     enabled: state.enabled,
+    options: state.options,
   };
   try {
     localStorage.setItem(STATE_KEY, JSON.stringify(record));
@@ -171,7 +183,7 @@ function applyLifecycle(entry, enabled) {
 }
 
 function registerPlugin(definition) {
-  const { id, name, description = "", version = "1.0.0", defaultEnabled = true, onEnable, onDisable } = definition ?? {};
+  const { id, name, description = "", version = "1.0.0", defaultEnabled = true, options = [], onEnable, onDisable, onOptionChange } = definition ?? {};
   if (!id || !name) {
     throw new Error("[Perfectionism] registerPlugin needs an id and a name.");
   }
@@ -179,7 +191,7 @@ function registerPlugin(definition) {
     console.warn(`[Perfectionism] ${name} is already registered.`);
     return;
   }
-  const entry = { id, name, description, version, defaultEnabled, onEnable, onDisable, active: false };
+  const entry = { id, name, description, version, defaultEnabled, options, onEnable, onDisable, onOptionChange, active: false };
   registry.set(id, entry);
   applyLifecycle(entry, isPluginEnabled(id));
   refreshPanel();
@@ -201,6 +213,26 @@ function setPluginEnabled(id, enabled) {
   applyLifecycle(entry, Boolean(enabled));
   refreshPanel();
   return true;
+}
+
+function getOption(id, key) {
+  const entry = registry.get(id);
+  const fallback = entry?.options?.find((option) => option.key === key)?.default;
+  const stored = state.options?.[id]?.[key];
+  return stored === undefined ? Boolean(fallback) : Boolean(stored);
+}
+
+function setOption(id, key, value) {
+  if (!state.options[id]) state.options[id] = {};
+  state.options[id][key] = Boolean(value);
+  saveState();
+  const entry = registry.get(id);
+  try {
+    entry?.onOptionChange?.(key, Boolean(value));
+  } catch (error) {
+    logError(`${entry?.name ?? id} could not apply the option change.`, error);
+  }
+  refreshPanel();
 }
 
 function getPlugins() {
@@ -510,6 +542,24 @@ function el(tag, className, text) {
   return node;
 }
 
+function buildOptions(mod) {
+  const options = registry.get(mod.id)?.options ?? [];
+  if (options.length === 0) return null;
+  const wrap = el("div", "perf-opts");
+  for (const option of options) {
+    const row = el("label", "perf-opt perf-toggle");
+    row.title = option.description ?? "";
+    const input = el("input");
+    input.type = "checkbox";
+    input.checked = getOption(mod.id, option.key);
+    input.setAttribute("aria-label", `${mod.name}: ${option.label}`);
+    input.addEventListener("change", () => setOption(mod.id, option.key, input.checked));
+    row.append(input, el("span", "perf-box"), el("span", "perf-opt-label", option.label));
+    wrap.append(row);
+  }
+  return wrap;
+}
+
 function buildToggle(mod) {
   const label = el("label", "perf-toggle");
   label.title = `Enable ${mod.name}`;
@@ -556,6 +606,8 @@ function buildCard(mod) {
   name.append(el("span", "perf-version", `v${registry.get(mod.id)?.version ?? mod.version}`));
   info.append(name);
   if (mod.description) info.append(el("div", "perf-desc", mod.description));
+  const optionList = buildOptions(mod);
+  if (optionList) info.append(optionList);
 
   const actions = el("div", "perf-actions");
   if (installed) actions.append(buildToggle(mod));
@@ -727,6 +779,8 @@ const utils = {
   setPluginEnabled,
   isPluginEnabled,
   getPlugins,
+  getOption,
+  setOption,
   getAvailableModules,
   installModule,
   uninstallModule,

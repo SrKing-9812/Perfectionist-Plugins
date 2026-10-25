@@ -1,4 +1,4 @@
-export const version = "3.5.0";
+export const version = "3.6.0";
 
 const PLUGIN_ID = "ban-blocker";
 const STYLE_ID = "perfectionist-ban-blocker-style";
@@ -118,7 +118,7 @@ function payloadName(p) {
 
 function keyOf(p) {
   if (typeof p === "number") return p;
-  const strong = p?.summonerId || p?.puuid;
+  const strong = p?.summonerId || p?.puuid || p?.obfuscatedPuuid || p?.obfuscatedSummonerId;
   if (strong) return strong;
   const n = payloadName(p);
   if (n) return `name:${n}`;
@@ -126,7 +126,8 @@ function keyOf(p) {
 }
 
 function linkPlayer(p, rowName, cellId) {
-  const strong = typeof p === "number" ? p : p?.summonerId || p?.puuid;
+  const strong =
+    typeof p === "number" ? p : p?.summonerId || p?.puuid || p?.obfuscatedPuuid || p?.obfuscatedSummonerId;
   const pn = typeof p === "number" ? "" : payloadName(p);
   const rn = norm(rowName);
   const keys = [];
@@ -208,7 +209,7 @@ function decide(s) {
 
   cellToPlayer.clear();
   for (const p of m) {
-    const row = rows.find((r) => r.slotId === p.cellId);
+    const row = rows.find((r) => (r.cell ?? r.slotId) === p.cellId);
     cellToPlayer.set(p.cellId, linkPlayer(p, row?.name, p.cellId));
   }
 
@@ -310,7 +311,8 @@ function detectRows() {
     return found.map((r, i) => ({
       ...r,
       index: i,
-      player: rows[i]?.player ?? null,
+      player: rows[i]?.el === r.el ? (rows[i]?.player ?? null) : null,
+      cell: rows[i]?.el === r.el ? (rows[i]?.cell ?? null) : null,
     }));
   } catch (err) {
     logError("row detection failed.", err);
@@ -362,11 +364,27 @@ function bindRowsToTeam(session) {
   if (!list.length || !cells.length) return;
   for (const c of cells) ensureName(c);
 
+  const selfIdx = list.findIndex((r) => isSelfRow(r));
+  const selfCellIdx =
+    session?.localPlayerCellId != null ? cells.findIndex((c) => c.cellId === session.localPlayerCellId) : -1;
+  let pick;
+  if (selfIdx >= 0 && selfCellIdx >= 0) {
+    const selfSlot = list[selfIdx].slotId;
+    if (selfSlot != null && selfSlot === cells[selfCellIdx].cellId) {
+      pick = (r) => (r.slotId != null ? cells.find((c) => c.cellId === r.slotId) : null);
+    } else if (selfIdx === selfCellIdx) {
+      pick = (r) => (r.slotId != null ? cells[r.slotId] : null) ?? cells[r.index];
+    } else {
+      pick = () => null;
+    }
+  } else {
+    pick = (r) => (r.slotId != null ? cells.find((c) => c.cellId === r.slotId) : null);
+  }
+
   for (const r of list) {
-    const cell =
-      (r.slotId != null ? cells.find((c) => c.cellId === r.slotId) : null) ??
-      cells.find((c) => nameMatches(r.name, keyOf(c)));
+    const cell = pick(r) ?? cells.find((c) => nameMatches(r.name, keyOf(c)));
     if (cell) {
+      r.cell = cell.cellId;
       r.player = linkPlayer(cell, r.name, cell.cellId);
       cellToPlayer.set(cell.cellId, r.player);
     } else {
@@ -428,7 +446,7 @@ function buildBadge(slot) {
 
 function isSelfRow(r) {
   if (r.el.classList.contains("is-self")) return true;
-  return lastSession?.localPlayerCellId != null && r.slotId === lastSession.localPlayerCellId;
+  return lastSession?.localPlayerCellId != null && (r.cell ?? r.slotId) === lastSession.localPlayerCellId;
 }
 
 function nativeSwapIn(circle) {
@@ -455,7 +473,8 @@ function ensureButtons() {
       buttons.set(r.index, btn);
     }
     btn.dataset.slot = String(r.index);
-    btn.dataset.cell = r.slotId == null ? "" : String(r.slotId);
+    const cell = r.cell ?? r.slotId;
+    btn.dataset.cell = cell == null ? "" : String(cell);
   }
   for (const [slot, btn] of [...buttons]) {
     if (!list[slot] || !btn.isConnected) {

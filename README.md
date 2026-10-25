@@ -53,6 +53,20 @@ Built for [Pengu Loader](https://pengu.lol)
       Browse the full list and pick any skin you like as your profile background.
     </td>
   </tr>
+  <tr>
+    <td>&nbsp;</td>
+  </tr>
+  <tr>
+    <th align="left">🎁 Auto Claimer</th>
+  </tr>
+  <tr>
+    <td>
+      Claims every reward for you the moment it becomes claimable — event tracks, missions and the TFT Battle Pass.
+      <br><br>
+      Three optional extras, all <b>off by default</b>: auto-buy shop items Riot lists for 1 BE,
+      auto-open mystery loot (icons, ward skins), and auto-open chests with keys.
+    </td>
+  </tr>
 </table>
 
 ## Install
