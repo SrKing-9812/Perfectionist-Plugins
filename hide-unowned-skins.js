@@ -1,4 +1,4 @@
-export const version = "2.3.0";
+export const version = "2.3.1";
 
 const PLUGIN_ID = "hide-unowned-skins";
 const STYLE_ID = "perfectionist-hide-unowned-skins-style";
@@ -591,8 +591,10 @@ function onEnable(utils) {
   removeStyle = api.addStyle(STYLE_ID, CSS);
 
   renderObserver = new MutationObserver(() => {
+    const item = document.querySelector(SKIN_ITEM_SELECTOR);
+    if (!item && !document.querySelector(DOT_SELECTOR)) return;
     applyAllGuarded();
-    if (document.querySelector(SKIN_ITEM_SELECTOR)) scheduleRefresh();
+    if (item) scheduleRefresh();
   });
   renderObserver.observe(document.documentElement ?? document, OBSERVER_OPTIONS);
 

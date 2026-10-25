@@ -1,4 +1,4 @@
-export const version = "1.2.0";
+export const version = "1.2.1";
 
 const PLUGIN_ID = "unlock-profile-skins";
 const PICKER_BUTTON_SELECTOR = ".style-profile-skin-picker-button";
@@ -294,6 +294,7 @@ function applyTierGrouping() {
     tierAppliedForOpen = false;
   }
   if (tierAppliedForOpen) return;
+  if (!isPickerOpen()) return;
   const dd = tierDropdown ?? findGroupingDropdown();
   if (!dd) {
     tierAppliedForOpen = false;
