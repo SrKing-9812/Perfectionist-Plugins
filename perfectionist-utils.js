@@ -6,7 +6,7 @@ const PANEL_ID = "perfectionist-plugins-panel";
 const STYLE_ID = "perfectionist-plugins-style";
 const TAB_TITLE = "Perfectionism";
 
-export const version = "1.2.0";
+export const version = "1.6.0";
 
 const PKG = "perfectionist-plugins";
 const CDN = "https://cdn.jsdelivr.net/npm";
@@ -47,13 +47,21 @@ const BUNDLED_MODULES = [
     id: "auto-claimer",
     file: "auto-claimer.js",
     name: "Auto Claimer",
-    version: "1.0.0",
+    version: "1.2.0",
     description: "Automatically claims battle pass, event and mission rewards the moment they become claimable.",
+  },
+  {
+    id: "auto-read",
+    file: "auto-read.js",
+    name: "Auto Read",
+    version: "1.0.0",
+    description: "Automatically marks quests, loot, Clash and client notices as read so no badge or dot stays lit.",
   },
 ];
 
 const STYLE_CSS = `
-#${PANEL_ID} { padding: 12px 24px 24px 8px; box-sizing: border-box; color: #f0e6d2; font-family: "LoL Body", Arial, "Helvetica Neue", Helvetica, sans-serif; }
+#${PANEL_ID} { overflow-x: hidden; padding: 15px 20px; position: relative; width: calc(100% - 40px); box-sizing: content-box; color: #f0e6d2; font-family: "LoL Body", Arial, "Helvetica Neue", Helvetica, sans-serif; }
+#${PANEL_ID} > lol-uikit-scrollable { display: block; height: 100%; }
 #${PANEL_ID} .perf-card { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
   padding: 16px 18px; margin-bottom: 12px; box-sizing: border-box;
   background: #010a13; border: 1px solid #785a28; }
@@ -88,6 +96,30 @@ const STYLE_CSS = `
 #${PANEL_ID} .perf-opt { display: flex; align-items: center; gap: 9px; cursor: pointer; }
 #${PANEL_ID} .perf-opt .perf-opt-label { font-size: 11px; letter-spacing: 0.3px; color: #a09b8c; }
 #${PANEL_ID} .perf-opt:hover .perf-opt-label { color: #f0e6d2; }
+#${PANEL_ID} .perf-opt-group { margin-top: 2px; }
+#${PANEL_ID} .perf-opt-head { display: flex; align-items: center; gap: 9px; }
+#${PANEL_ID} .perf-caret { flex: 0 0 auto; width: 28px; height: 28px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; background: transparent; }
+#${PANEL_ID} .perf-caret:hover { border-color: #785a28; background: #0a1428; }
+#${PANEL_ID} .perf-caret::after { content: ""; width: 12px; height: 12px; transform-origin: center;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'%3E%3Cpath d='M2 1l4 3-4 3z' fill='%23c89b3c'/%3E%3C/svg%3E") center / 12px 12px no-repeat;
+  transition: transform 0.15s; }
+#${PANEL_ID} .perf-caret:hover::after { filter: brightness(1.4); }
+#${PANEL_ID} .perf-caret--open::after { transform: rotate(90deg); }
+#${PANEL_ID} .perf-opt-children { margin: 8px 0 2px 25px; padding-left: 12px; display: flex; flex-direction: column; gap: 8px;
+  border-left: 1px solid #785a28; }
+#${PANEL_ID} .perf-toggle input:disabled + .perf-box,
+#${PANEL_ID} .perf-toggle input:disabled ~ .perf-opt-label { opacity: 0.45; }
+#${PANEL_ID} .perf-toggle input:disabled ~ .perf-opt-label { cursor: default; }
+#${PANEL_ID} .perf-chip-block { margin-top: 11px; }
+#${PANEL_ID} .perf-chips-label { font-size: 10px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: #c89b3c; margin-bottom: 7px; }
+#${PANEL_ID} .perf-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+#${PANEL_ID} .perf-chip { font-family: "LoL Body", Arial, "Helvetica Neue", Helvetica, sans-serif; font-size: 10px; font-weight: 700;
+  letter-spacing: 0.5px; text-transform: uppercase; color: #a09b8c; background: #0a1428; border: 1px solid #785a28;
+  padding: 6px 11px; cursor: pointer; }
+#${PANEL_ID} .perf-chip:hover { color: #f0e6d2; border-color: #c89b3c; }
+#${PANEL_ID} .perf-chip--on { color: #010a13; background: #c89b3c; border-color: #c89b3c; }
+#${PANEL_ID} .perf-chip--on:hover { background: #f0e6d2; }
 
 .perf-update { position: fixed; inset: 0; z-index: 100000; display: flex; align-items: center;
   justify-content: center; background: rgba(1, 10, 19, 0.72); }
@@ -215,9 +247,22 @@ function setPluginEnabled(id, enabled) {
   return true;
 }
 
+function findOption(entry, key) {
+  for (const option of entry?.options ?? []) {
+    if (option.key === key) return option;
+    for (const child of option.children ?? []) {
+      if (child.key === key) return child;
+    }
+    for (const item of option.items ?? []) {
+      if (`${option.key}.${item.id}` === key) return item;
+    }
+  }
+  return null;
+}
+
 function getOption(id, key) {
   const entry = registry.get(id);
-  const fallback = entry?.options?.find((option) => option.key === key)?.default;
+  const fallback = findOption(entry, key)?.default;
   const stored = state.options?.[id]?.[key];
   return stored === undefined ? Boolean(fallback) : Boolean(stored);
 }
@@ -542,20 +587,86 @@ function el(tag, className, text) {
   return node;
 }
 
+const optionGroupState = new Map();
+
+function buildOptionRow(mod, option, disabled, onChange) {
+  const row = el("label", "perf-opt perf-toggle");
+  row.title = option.description ?? "";
+  const input = el("input");
+  input.type = "checkbox";
+  input.checked = getOption(mod.id, option.key);
+  input.disabled = Boolean(disabled);
+  input.setAttribute("aria-label", `${mod.name}: ${option.label}`);
+  input.addEventListener("change", () => {
+    if (onChange) onChange(input.checked);
+    else setOption(mod.id, option.key, input.checked);
+  });
+  row.append(input, el("span", "perf-box"), el("span", "perf-opt-label", option.label));
+  return row;
+}
+
+function buildChips(mod, option) {
+  const block = el("div", "perf-chip-block");
+  block.title = option.description ?? "";
+  if (option.label) block.append(el("div", "perf-chips-label", option.label));
+  const row = el("div", "perf-chips");
+  for (const item of option.items ?? []) {
+    const key = `${option.key}.${item.id}`;
+    const chip = el("button", "perf-chip", item.label);
+    chip.type = "button";
+    chip.title = item.description ?? "";
+    if (getOption(mod.id, key)) chip.classList.add("perf-chip--on");
+    chip.addEventListener("click", () => setOption(mod.id, key, !getOption(mod.id, key)));
+    row.append(chip);
+  }
+  block.append(row);
+  return block;
+}
+
 function buildOptions(mod) {
   const options = registry.get(mod.id)?.options ?? [];
   if (options.length === 0) return null;
   const wrap = el("div", "perf-opts");
   for (const option of options) {
-    const row = el("label", "perf-opt perf-toggle");
-    row.title = option.description ?? "";
-    const input = el("input");
-    input.type = "checkbox";
-    input.checked = getOption(mod.id, option.key);
-    input.setAttribute("aria-label", `${mod.name}: ${option.label}`);
-    input.addEventListener("change", () => setOption(mod.id, option.key, input.checked));
-    row.append(input, el("span", "perf-box"), el("span", "perf-opt-label", option.label));
-    wrap.append(row);
+    if (option.type === "chips") {
+      wrap.append(buildChips(mod, option));
+      continue;
+    }
+    if (!option.children?.length) {
+      wrap.append(buildOptionRow(mod, option));
+      continue;
+    }
+    const group = el("div", "perf-opt-group");
+    const head = el("div", "perf-opt-head");
+    const caret = el("span", "perf-caret");
+    caret.setAttribute("role", "button");
+    caret.setAttribute("aria-label", `Show ${mod.name} options`);
+    const kids = el("div", "perf-opt-children");
+    const childInputs = [];
+    for (const child of option.children) {
+      const childRow = buildOptionRow(mod, child, !getOption(mod.id, option.key));
+      childInputs.push(childRow.querySelector("input"));
+      kids.append(childRow);
+    }
+    const master = buildOptionRow(mod, option, false, (checked) => {
+      for (const input of childInputs) input.disabled = !checked;
+      setOption(mod.id, option.key, checked);
+    });
+    const groupKey = `${mod.id}:${option.key}`;
+    const setExpanded = (open) => {
+      optionGroupState.set(groupKey, open);
+      kids.style.display = open ? "" : "none";
+      caret.classList.toggle("perf-caret--open", open);
+    };
+    setExpanded(optionGroupState.get(groupKey) ?? false);
+    caret.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setExpanded(!(optionGroupState.get(groupKey) ?? false));
+    });
+    head.append(master, caret);
+    group.append(head, kids);
+    wrap.append(group);
   }
   return wrap;
 }
@@ -620,13 +731,15 @@ function buildCard(mod) {
 function buildPanel() {
   const panel = el("div");
   panel.id = PANEL_ID;
+  const scroller = el("lol-uikit-scrollable");
+  panel.append(scroller);
 
   const modules = getAvailableModules();
   if (modules.length === 0) {
-    panel.append(el("div", "perf-empty", "No plugins are available."));
+    scroller.append(el("div", "perf-empty", "No plugins are available."));
     return panel;
   }
-  for (const mod of modules) panel.append(buildCard(mod));
+  for (const mod of modules) scroller.append(buildCard(mod));
   return panel;
 }
 

@@ -1,5 +1,5 @@
 const PLUGIN_ID = "auto-claimer";
-const version = "1.0.0";
+const version = "1.2.0";
 
 const SWEEP_DEBOUNCE_MS = 400;
 const CLAIM_COOLDOWN_MS = 5 * 60 * 1000;
@@ -29,7 +29,7 @@ let shopQueued = false;
 let unsubscribes = [];
 let sourceInstalled = false;
 const cooldowns = new Map();
-const menus = new Map();
+const recipes = new Map();
 
 function on(key) {
   try {
@@ -113,20 +113,26 @@ async function sweepTftPasses() {
   }
 }
 
-function menuFor(lootId) {
-  if (!menus.has(lootId)) {
-    const promise = getJson(`/lol-loot/v1/player-loot/${encodeURIComponent(lootId)}/context-menu`).catch(() => {
-      menus.delete(lootId);
-      return null;
-    });
-    menus.set(lootId, promise);
+function recipeFor(lootId) {
+  if (!recipes.has(lootId)) {
+    const promise = getJson(`/lol-loot/v1/recipes/initial-item/${encodeURIComponent(lootId)}`)
+      .then((list) => (Array.isArray(list) ? (list.find((entry) => entry?.type === "OPEN" && entry.recipeName) ?? null) : null))
+      .catch(() => {
+        recipes.delete(lootId);
+        return null;
+      });
+    recipes.set(lootId, promise);
   }
-  return menus.get(lootId);
+  return recipes.get(lootId);
 }
 
 async function sweepLoot() {
   const loot = await getJson(LOOT_URI);
   if (!Array.isArray(loot)) return;
+  const owned = new Map();
+  for (const item of loot) {
+    if (item?.lootId) owned.set(item.lootId, item.count ?? 0);
+  }
   let actions = 0;
   for (const item of loot) {
     if (actions >= MAX_ACTIONS_PER_SWEEP) break;
@@ -134,15 +140,32 @@ async function sweepLoot() {
     const count = item?.count ?? 0;
     if (!lootId || count <= 0 || /^(CURRENCY|MATERIAL)_/.test(lootId)) continue;
     if (!ready(`loot:${lootId}`, CLAIM_COOLDOWN_MS)) continue;
-    const menu = await menuFor(lootId);
-    const open = (Array.isArray(menu) ? menu : []).find((action) => action?.actionType === "OPEN" && action.name && action.enabled !== false);
-    if (!open) continue;
-    const needsKey = (open.requiredOthersCount ?? 0) > 0;
-    if (needsKey ? !on("openChests") : !on("openLoot")) continue;
+    const recipe = await recipeFor(lootId);
+    if (!recipe) continue;
+    const isChest = item.type === "CHEST" || /CHEST/i.test(lootId) || /CHEST/i.test(recipe.displayCategories ?? "");
+    if (!on("openLoot") || !(isChest ? on("openChests") : on("openMystery"))) continue;
+    const slots = Array.isArray(recipe.slots) ? recipe.slots : [];
+    const body = [];
+    let repeat = count;
+    let blocked = false;
+    for (const slot of slots) {
+      const candidates = Array.isArray(slot?.lootIds) ? slot.lootIds : [];
+      const match = candidates.find((id) => (owned.get(id) ?? 0) > 0);
+      if (!match) {
+        blocked = true;
+        break;
+      }
+      body.push(match);
+      repeat = Math.min(repeat, Math.floor((owned.get(match) ?? 0) / Math.max(1, slot.quantity ?? 1)));
+    }
+    if (blocked || body.length === 0 || repeat <= 0) continue;
+    repeat = Math.min(repeat, 25);
     stamp(`loot:${lootId}`);
     actions++;
-    const repeat = Math.min(count, 25);
-    await sendJson("POST", `/lol-loot/v1/recipes/${encodeURIComponent(open.name)}/craft?repeat=${repeat}`, [lootId]).catch(() => {});
+    for (let i = 0; i < body.length; i++) {
+      owned.set(body[i], (owned.get(body[i]) ?? 0) - repeat * (slots[i].quantity ?? 1));
+    }
+    await sendJson("POST", `/lol-loot/v1/recipes/${encodeURIComponent(recipe.recipeName)}/craft?repeat=${repeat}`, body).catch(() => {});
   }
 }
 
@@ -221,7 +244,7 @@ async function runClaims() {
     await sweepEvents().catch(() => {});
     await sweepMissions().catch(() => {});
     await sweepTftPasses().catch(() => {});
-    if (on("openLoot") || on("openChests")) await sweepLoot().catch(() => {});
+    if (on("openLoot") && (on("openMystery") || on("openChests"))) await sweepLoot().catch(() => {});
   } finally {
     claimRunning = false;
     if (claimQueued) {
@@ -279,7 +302,7 @@ function onEnable(utils) {
   api = utils;
   active = true;
   cooldowns.clear();
-  menus.clear();
+  recipes.clear();
   const claimPush = () => scheduleClaims();
   const shopPush = () => {
     if (on("buy1Be")) scheduleShop();
@@ -317,7 +340,7 @@ function onDisable() {
   }
   unsubscribes = [];
   cooldowns.clear();
-  menus.clear();
+  recipes.clear();
   api = null;
 }
 
@@ -349,15 +372,23 @@ export function init() {
         },
         {
           key: "openLoot",
-          label: "Auto-open loot (mystery icons, ward skins, ...)",
-          description: "Opens free mystery loot the moment you get it. Never touches items that need a key.",
+          label: "Auto-open loot",
+          description: "Master switch for opening loot automatically. Choose what to include below.",
           default: false,
-        },
-        {
-          key: "openChests",
-          label: "Auto-open chests with keys",
-          description: "Opens chest + key loot automatically while you have keys.",
-          default: false,
+          children: [
+            {
+              key: "openMystery",
+              label: "Include mystery items",
+              description: "Mystery icons, mystery ward skins, mystery emotes, mystery skins and other random-reward items.",
+              default: false,
+            },
+            {
+              key: "openChests",
+              label: "Include Hextech Chests",
+              description: "Hextech Chests, opened with your keys when one is required.",
+              default: false,
+            },
+          ],
         },
       ],
       onEnable,
