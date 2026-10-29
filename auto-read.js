@@ -1,5 +1,5 @@
 const PLUGIN_ID = "auto-read";
-const version = "1.0.0";
+const version = "1.1.0";
 
 const SWEEP_DEBOUNCE_MS = 500;
 const ITEM_COOLDOWN_MS = 10 * 60 * 1000;
@@ -9,6 +9,16 @@ const MISSIONS_URI = "/lol-missions/v1/missions";
 const MISSIONS_PLAYER_URI = "/lol-missions/v1/player";
 const LOOT_URI = "/lol-loot/v1/player-loot";
 const CLASH_FLAGS_URI = "/lol-clash/v1/simple-state-flags";
+const REWARDS_GRANTS_URI = "/lol-rewards/v1/grants";
+const REWARDS_VIEW_URI = "/lol-rewards/v1/grants/view";
+const LOOT_NOTIF_URI = "/lol-loot/v1/player-loot-notifications";
+const MASTERY_NOTIF_URI = "/lol-champion-mastery/v1/notifications";
+const MASTERY_ACK_URI = "/lol-champion-mastery/v1/notifications/ack";
+const HONOR_NOTICES = [
+  { uri: "/lol-honor-v2/v1/reward-granted", ack: "/lol-honor-v2/v1/reward-granted/ack", present: (d) => Number(d?.quantity ?? -1) >= 0 || Boolean(d?.rewardType) },
+  { uri: "/lol-honor-v2/v1/mutual-honor", ack: "/lol-honor-v2/v1/mutual-honor/ack", present: (d) => (d?.summoners?.length ?? 0) > 0 },
+  { uri: "/lol-honor-v2/v1/level-change", ack: "/lol-honor-v2/v1/level-change/ack", present: (d) => Number(d?.currentState?.level ?? -1) >= 0 },
+];
 const RANKED_NOTIF_URI = "/lol-ranked/v1/notifications";
 const EOS_NOTIF_URI = "/lol-ranked/v1/eos-notifications";
 const NOTICE_LIST_URIS = [
@@ -39,6 +49,7 @@ let sweepRunning = false;
 let sweepQueued = false;
 let unsubscribes = [];
 const cooldowns = new Map();
+const markedGrants = new Set();
 
 function on(key) {
   try {
@@ -116,6 +127,49 @@ async function sweepClash() {
   }
 }
 
+async function sweepRewards() {
+  const grants = await getJson(REWARDS_GRANTS_URI).catch(() => null);
+  if (Array.isArray(grants) && grants.length && ready("rewards-grants", BULK_COOLDOWN_MS)) {
+    const ids = [];
+    for (const grant of grants) {
+      const id = grant?.grantId ?? grant?.id;
+      if (typeof id !== "string" || !id || markedGrants.has(id)) continue;
+      ids.push(id);
+    }
+    if (ids.length) {
+      stamp("rewards-grants");
+      for (const id of ids) markedGrants.add(id);
+      await sendJson("PATCH", REWARDS_VIEW_URI, ids).catch(() => {
+        for (const id of ids) markedGrants.delete(id);
+      });
+    }
+  }
+
+  const notes = await getJson(LOOT_NOTIF_URI).catch(() => null);
+  if (Array.isArray(notes)) {
+    for (const note of notes) {
+      const id = note?.id ?? note?.lootId;
+      if (!id || !ready(`lootnote:${id}`, ITEM_COOLDOWN_MS)) continue;
+      stamp(`lootnote:${id}`);
+      await sendJson("POST", `${LOOT_NOTIF_URI}/${encodeURIComponent(id)}/acknowledge`).catch(() => {});
+    }
+  }
+
+  const mastery = await getJson(MASTERY_NOTIF_URI).catch(() => null);
+  if (Number(mastery?.championId ?? 0) > 0 && ready("mastery", ITEM_COOLDOWN_MS)) {
+    stamp("mastery");
+    await sendJson("POST", MASTERY_ACK_URI).catch(() => {});
+  }
+
+  for (const notice of HONOR_NOTICES) {
+    const data = await getJson(notice.uri).catch(() => null);
+    const key = `honor:${notice.uri}`;
+    if (!data || !notice.present(data) || !ready(key, ITEM_COOLDOWN_MS)) continue;
+    stamp(key);
+    await sendJson("POST", notice.ack).catch(() => {});
+  }
+}
+
 async function sweepRanked() {
   for (const uri of [RANKED_NOTIF_URI, EOS_NOTIF_URI]) {
     const list = await getJson(uri).catch(() => null);
@@ -176,6 +230,7 @@ async function runSweep() {
   try {
     if (on("quests")) await sweepQuests().catch(() => {});
     if (on("loot")) await sweepLootMarks().catch(() => {});
+    if (on("rewards")) await sweepRewards().catch(() => {});
     if (on("clash")) await sweepClash().catch(() => {});
     if (on("ranked")) await sweepRanked().catch(() => {});
     if (on("notices")) await sweepNotices().catch(() => {});
@@ -192,7 +247,7 @@ function onEnable(utils) {
   api = utils;
   active = true;
   cooldowns.clear();
-  for (const uri of [MISSIONS_URI, LOOT_URI, CLASH_FLAGS_URI, RANKED_NOTIF_URI, EOS_NOTIF_URI, ...NOTICE_LIST_URIS]) {
+  for (const uri of [MISSIONS_URI, LOOT_URI, CLASH_FLAGS_URI, REWARDS_GRANTS_URI, LOOT_NOTIF_URI, MASTERY_NOTIF_URI, ...HONOR_NOTICES.map((n) => n.uri), RANKED_NOTIF_URI, EOS_NOTIF_URI, ...NOTICE_LIST_URIS]) {
     try {
       const off = api.subscribe(uri, scheduleSweep);
       if (off) unsubscribes.push(off);
@@ -215,6 +270,7 @@ function onDisable() {
   }
   unsubscribes = [];
   cooldowns.clear();
+  markedGrants.clear();
   api = null;
   syncPips();
 }
@@ -242,6 +298,7 @@ export function init() {
           items: [
             { id: "quests", label: "Quests", description: "Quest and mission badges, including the mission button counter.", default: true },
             { id: "loot", label: "Loot marks", description: "The new mark on freshly earned loot.", default: true },
+            { id: "rewards", label: "Rewards", description: "The dot on your avatar for new tokens, titles and banners, plus mastery, honor and loot notifications.", default: true },
             { id: "clash", label: "Clash", description: "Clash tab flags and Clash notifications.", default: true },
             { id: "ranked", label: "Ranked", description: "Ranked, end-of-season and champion mastery notices.", default: true },
             { id: "notices", label: "Notices", description: "Patch, patcher, leaver buster, lobby, behavior and gameflow notices.", default: true },

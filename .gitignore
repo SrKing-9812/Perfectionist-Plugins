@@ -11,3 +11,5 @@ debug-*
 *.mjs
 perf-notes.md
 OG-BanBlocker.js
+# archived / retired plugins - kept locally, never published or committed
+.archive/

@@ -6,7 +6,7 @@ const PANEL_ID = "perfectionist-plugins-panel";
 const STYLE_ID = "perfectionist-plugins-style";
 const TAB_TITLE = "Perfectionism";
 
-export const version = "1.6.0";
+export const version = "1.7.0";
 
 const PKG = "perfectionist-plugins";
 const CDN = "https://cdn.jsdelivr.net/npm";
@@ -54,7 +54,7 @@ const BUNDLED_MODULES = [
     id: "auto-read",
     file: "auto-read.js",
     name: "Auto Read",
-    version: "1.0.0",
+    version: "1.1.0",
     description: "Automatically marks quests, loot, Clash and client notices as read so no badge or dot stays lit.",
   },
 ];
@@ -267,7 +267,7 @@ function getOption(id, key) {
   return stored === undefined ? Boolean(fallback) : Boolean(stored);
 }
 
-function setOption(id, key, value) {
+function setOption(id, key, value, refresh = true) {
   if (!state.options[id]) state.options[id] = {};
   state.options[id][key] = Boolean(value);
   saveState();
@@ -277,7 +277,7 @@ function setOption(id, key, value) {
   } catch (error) {
     logError(`${entry?.name ?? id} could not apply the option change.`, error);
   }
-  refreshPanel();
+  if (refresh) refreshPanel();
 }
 
 function getPlugins() {
@@ -599,7 +599,7 @@ function buildOptionRow(mod, option, disabled, onChange) {
   input.setAttribute("aria-label", `${mod.name}: ${option.label}`);
   input.addEventListener("change", () => {
     if (onChange) onChange(input.checked);
-    else setOption(mod.id, option.key, input.checked);
+    else setOption(mod.id, option.key, input.checked, false);
   });
   row.append(input, el("span", "perf-box"), el("span", "perf-opt-label", option.label));
   return row;
@@ -616,7 +616,10 @@ function buildChips(mod, option) {
     chip.type = "button";
     chip.title = item.description ?? "";
     if (getOption(mod.id, key)) chip.classList.add("perf-chip--on");
-    chip.addEventListener("click", () => setOption(mod.id, key, !getOption(mod.id, key)));
+    chip.addEventListener("click", () => {
+      setOption(mod.id, key, !getOption(mod.id, key), false);
+      chip.classList.toggle("perf-chip--on", getOption(mod.id, key));
+    });
     row.append(chip);
   }
   block.append(row);
@@ -650,7 +653,7 @@ function buildOptions(mod) {
     }
     const master = buildOptionRow(mod, option, false, (checked) => {
       for (const input of childInputs) input.disabled = !checked;
-      setOption(mod.id, option.key, checked);
+      setOption(mod.id, option.key, checked, false);
     });
     const groupKey = `${mod.id}:${option.key}`;
     const setExpanded = (open) => {
@@ -743,9 +746,25 @@ function buildPanel() {
   return panel;
 }
 
+function panelScrollTop(panel) {
+  return panel?.querySelector("lol-uikit-scrollable")?.scrollTop ?? 0;
+}
+
+function applyScrollTop(panel, top) {
+  if (!top || !panel) return;
+  const host = panel.querySelector("lol-uikit-scrollable");
+  if (host) host.scrollTop = top;
+}
+
 function refreshPanel() {
   const current = document.getElementById(PANEL_ID);
-  if (current) current.replaceWith(buildPanel());
+  if (!current) return;
+  const top = panelScrollTop(current);
+  const next = buildPanel();
+  current.replaceWith(next);
+  if (!top) return;
+  applyScrollTop(next, top);
+  requestAnimationFrame(() => applyScrollTop(next, top));
 }
 
 function setNavActive(activeNav) {
