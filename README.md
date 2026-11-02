@@ -63,8 +63,7 @@ Built for [Pengu Loader](https://pengu.lol)
     <td>
       Claims every reward for you the moment it becomes claimable — event tracks, missions and the TFT Battle Pass.
       <br><br>
-      Three optional extras, all <b>off by default</b>: auto-buy shop items Riot lists for 1 BE,
-      auto-open mystery loot (icons, ward skins), and auto-open chests with keys.
+      Three optional extras: auto-buy shop items Riot lists for 1 BE, auto-open mystery loot (icons, ward skins), and auto-open chests with keys.
     </td>
   </tr>
   <tr>
@@ -79,14 +78,8 @@ Built for [Pengu Loader](https://pengu.lol)
       duplicate requests are merged, and immutable payloads (game-data assets and rune definitions) are cached
       instead of re-downloaded and re-parsed every time a screen renders.
       <br><br>
-      Tiles are marked for asynchronous decode, so building bot lists, champion grids and the tournament-draft
-      board no longer stalls the UI, and the in-game un-gate pass backs off to one check every five seconds once it
+      Tiles are marked for asynchronous decode, so building bot lists, champion grids and the lobbies no longer stalls the UI, and the in-game un-gate pass backs off to one check every five seconds once it
       has nothing left to unlock.
-      <br><br>
-      It also keeps the social panel, friend requests and settings usable while a game is running.
-      <br><br>
-      For memory creep, <code>tools/betterclient-monitor.mjs</code> logs per-process RAM and client phase to CSV and
-      diffs heap snapshots.
     </td>
   </tr>
 </table>
