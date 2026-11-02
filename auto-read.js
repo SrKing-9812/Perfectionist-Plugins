@@ -1,5 +1,5 @@
 const PLUGIN_ID = "auto-read";
-const version = "1.1.0";
+const version = "1.2.0";
 
 const SWEEP_DEBOUNCE_MS = 500;
 const ITEM_COOLDOWN_MS = 10 * 60 * 1000;
@@ -39,6 +39,13 @@ const CLASH_BULK_ACKS = [
   "/lol-clash/v1/eog-player-update/acknowledge",
   "/lol-clash/v1/game-end/acknowledge",
 ];
+const IDENTITY_NOTICE_TYPES = ["ACHIEVEMENT_TITLE", "SUMMONER_ICON", "REGALIA_BANNER"];
+const IDENTITY_ACK_URI = "/lol-inventory/v1/notification/acknowledge";
+const TOKENS_PREFS_URI = "/lol-settings/v2/account/LCUPreferences/lol-customizer-tokens";
+const LEVELUP_PREFS_URI = "/lol-settings/v2/account/LCUPreferences/lol-challenges-latest-level-up";
+const TFT_BATTLE_PASS_URI = "/lol-tft-pass/v1/battle-pass";
+const TFT_HOME_HUB_URI = "/lol-tft/v1/tft/homeHub";
+const TFT_PREFS_URI = "/lol-settings/v2/account/LCUPreferences/lol-tft";
 const PIP_STYLE_ID = "auto-read-pips-style";
 const PIP_CSS = ".activity-center__tab_label_notification { display: none !important; }";
 
@@ -201,6 +208,65 @@ async function sweepNotices() {
   }
 }
 
+async function sweepIdentity() {
+  for (const type of IDENTITY_NOTICE_TYPES) {
+    const list = await getJson(`/lol-inventory/v1/notifications/${type}`).catch(() => null);
+    if (!Array.isArray(list)) continue;
+    for (const note of list) {
+      const id = note?.id;
+      if (id == null || note.acknowledged === true) continue;
+      if (!ready(`invnote:${id}`, ITEM_COOLDOWN_MS)) continue;
+      stamp(`invnote:${id}`);
+      await sendJson("POST", IDENTITY_ACK_URI, { id }).catch(() => {});
+    }
+  }
+  if (!ready("tokens-visit", BULK_COOLDOWN_MS)) return;
+  const [tokens, levelUp] = await Promise.all([
+    getJson(TOKENS_PREFS_URI).catch(() => null),
+    getJson(LEVELUP_PREFS_URI).catch(() => null),
+  ]);
+  const lastVisit = Number(tokens?.data?.lastVisitTime ?? 0);
+  const lastLevelUp = Number(levelUp?.data?.lastLevelUpTime ?? 0);
+  if (!lastVisit || !(lastLevelUp > lastVisit)) return;
+  stamp("tokens-visit");
+  await sendJson("PUT", TOKENS_PREFS_URI, { schemaVersion: 1, data: { lastVisitTime: Date.now() } }).catch(() => {});
+}
+
+async function sweepTft() {
+  const bp = await getJson(TFT_BATTLE_PASS_URI).catch(() => null);
+  if (bp && Array.isArray(bp.milestones) && Array.isArray(bp.bonuses)) {
+    const list = [...bp.milestones, ...bp.bonuses];
+    const claimable = list.some((m) => m && m.status === "CLAIMABLE" && !m.isLocked);
+    const pending = list.some((m) => m && m.isClaimRequestPending);
+    const passId = bp?.info?.passId;
+    if (claimable && !pending && passId && ready("tft-claim", BULK_COOLDOWN_MS)) {
+      stamp("tft-claim");
+      await sendJson("PUT", `/lol-tft-pass/v1/pass/${encodeURIComponent(passId)}/milestone/claimAllRewards`).catch(() => {});
+    }
+  }
+  if (!ready("tft-promos", BULK_COOLDOWN_MS)) return;
+  const [hub, prefs] = await Promise.all([
+    getJson(TFT_HOME_HUB_URI).catch(() => null),
+    getJson(TFT_PREFS_URI).catch(() => null),
+  ]);
+  const store = hub?.storePromoOfferIds;
+  const battle = hub?.battlePassOfferIds;
+  const tact = hub?.tacticianPromoOfferIds;
+  if (!hub?.enabled || !Array.isArray(store) || !Array.isArray(battle) || !Array.isArray(tact)) return;
+  const target = { storeOfferIds: [battle[0], store[0]], tacticianOfferIds: tact };
+  const seen = prefs?.data?.seenOfferIds;
+  const same =
+    Array.isArray(seen?.storeOfferIds) &&
+    seen.storeOfferIds.length === target.storeOfferIds.length &&
+    seen.storeOfferIds.every((value, index) => value === target.storeOfferIds[index]) &&
+    Array.isArray(seen?.tacticianOfferIds) &&
+    seen.tacticianOfferIds.length === target.tacticianOfferIds.length &&
+    seen.tacticianOfferIds.every((value, index) => value === target.tacticianOfferIds[index]);
+  if (same) return;
+  stamp("tft-promos");
+  await sendJson("PATCH", TFT_PREFS_URI, { data: { seenOfferIds: target }, schemaVersion: 1 }).catch(() => {});
+}
+
 function syncPips() {
   const wanted = active && on("pips");
   let style = document.getElementById(PIP_STYLE_ID);
@@ -230,7 +296,11 @@ async function runSweep() {
   try {
     if (on("quests")) await sweepQuests().catch(() => {});
     if (on("loot")) await sweepLootMarks().catch(() => {});
-    if (on("rewards")) await sweepRewards().catch(() => {});
+    if (on("rewards")) {
+      await sweepRewards().catch(() => {});
+      await sweepIdentity().catch(() => {});
+    }
+    if (on("tft")) await sweepTft().catch(() => {});
     if (on("clash")) await sweepClash().catch(() => {});
     if (on("ranked")) await sweepRanked().catch(() => {});
     if (on("notices")) await sweepNotices().catch(() => {});
@@ -247,7 +317,7 @@ function onEnable(utils) {
   api = utils;
   active = true;
   cooldowns.clear();
-  for (const uri of [MISSIONS_URI, LOOT_URI, CLASH_FLAGS_URI, REWARDS_GRANTS_URI, LOOT_NOTIF_URI, MASTERY_NOTIF_URI, ...HONOR_NOTICES.map((n) => n.uri), RANKED_NOTIF_URI, EOS_NOTIF_URI, ...NOTICE_LIST_URIS]) {
+  for (const uri of [MISSIONS_URI, LOOT_URI, CLASH_FLAGS_URI, REWARDS_GRANTS_URI, LOOT_NOTIF_URI, MASTERY_NOTIF_URI, ...HONOR_NOTICES.map((n) => n.uri), RANKED_NOTIF_URI, EOS_NOTIF_URI, ...NOTICE_LIST_URIS, ...IDENTITY_NOTICE_TYPES.map((type) => `/lol-inventory/v1/notifications/${type}`), TOKENS_PREFS_URI, LEVELUP_PREFS_URI, TFT_BATTLE_PASS_URI, TFT_HOME_HUB_URI, TFT_PREFS_URI]) {
     try {
       const off = api.subscribe(uri, scheduleSweep);
       if (off) unsubscribes.push(off);
@@ -286,7 +356,7 @@ export function init() {
     utils.registerPlugin({
       id: PLUGIN_ID,
       name: "Auto Read",
-      description: "Automatically marks quests, loot, Clash and client notices as read so no badge or dot stays lit.",
+      description: "Automatically marks quests, loot, Clash, TFT and client notices as read so no badge or dot stays lit.",
       version,
       defaultEnabled: true,
       options: [
@@ -299,6 +369,7 @@ export function init() {
             { id: "quests", label: "Quests", description: "Quest and mission badges, including the mission button counter.", default: true },
             { id: "loot", label: "Loot marks", description: "The new mark on freshly earned loot.", default: true },
             { id: "rewards", label: "Rewards", description: "The dot on your avatar for new tokens, titles and banners, plus mastery, honor and loot notifications.", default: true },
+            { id: "tft", label: "TFT tab", description: "Claims claimable TFT pass rewards and marks TFT promo offers as seen so the TFT tab dot stays off.", default: true },
             { id: "clash", label: "Clash", description: "Clash tab flags and Clash notifications.", default: true },
             { id: "ranked", label: "Ranked", description: "Ranked, end-of-season and champion mastery notices.", default: true },
             { id: "notices", label: "Notices", description: "Patch, patcher, leaver buster, lobby, behavior and gameflow notices.", default: true },

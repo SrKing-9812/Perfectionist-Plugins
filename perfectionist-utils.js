@@ -6,7 +6,7 @@ const PANEL_ID = "perfectionist-plugins-panel";
 const STYLE_ID = "perfectionist-plugins-style";
 const TAB_TITLE = "Perfectionism";
 
-export const version = "1.7.0";
+export const version = "1.8.0";
 
 const PKG = "perfectionist-plugins";
 const CDN = "https://cdn.jsdelivr.net/npm";
@@ -33,7 +33,7 @@ const BUNDLED_MODULES = [
     id: "hide-unowned-skins",
     file: "hide-unowned-skins.js",
     name: "Hide Unowned Skins",
-    version: "2.3.2",
+    version: "2.4.0",
     description: "In champion select, only shows the skins you own for the picked champion.",
   },
   {
@@ -54,14 +54,14 @@ const BUNDLED_MODULES = [
     id: "auto-read",
     file: "auto-read.js",
     name: "Auto Read",
-    version: "1.1.0",
-    description: "Automatically marks quests, loot, Clash and client notices as read so no badge or dot stays lit.",
+    version: "1.2.0",
+    description: "Automatically marks quests, loot, Clash, TFT and client notices as read so no badge or dot stays lit.",
   },
 ];
 
 const STYLE_CSS = `
-#${PANEL_ID} { overflow-x: hidden; padding: 15px 20px; position: relative; width: calc(100% - 40px); box-sizing: content-box; color: #f0e6d2; font-family: "LoL Body", Arial, "Helvetica Neue", Helvetica, sans-serif; }
-#${PANEL_ID} > lol-uikit-scrollable { display: block; height: 100%; }
+#${PANEL_ID} { display: flex; flex-direction: column; overflow-x: hidden; padding: 15px 20px; position: relative; width: calc(100% - 40px); box-sizing: content-box; color: #f0e6d2; font-family: "LoL Body", Arial, "Helvetica Neue", Helvetica, sans-serif; }
+#${PANEL_ID} > lol-uikit-scrollable { display: block; flex: 1 1 auto; min-height: 0; }
 #${PANEL_ID} .perf-card { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
   padding: 16px 18px; margin-bottom: 12px; box-sizing: border-box;
   background: #010a13; border: 1px solid #785a28; }
@@ -121,6 +121,21 @@ const STYLE_CSS = `
 #${PANEL_ID} .perf-chip--on { color: #010a13; background: #c89b3c; border-color: #c89b3c; }
 #${PANEL_ID} .perf-chip--on:hover { background: #f0e6d2; }
 
+#${PANEL_ID} .perf-tools { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; margin-bottom: 14px; }
+#${PANEL_ID} .perf-search { flex: 1 1 auto; min-width: 0; box-sizing: border-box;
+  font-family: "LoL Body", Arial, "Helvetica Neue", Helvetica, sans-serif; font-size: 12px; letter-spacing: 0.3px;
+  color: #f0e6d2; background: #0a1428; border: 1px solid #785a28; padding: 9px 12px; outline: none; }
+#${PANEL_ID} .perf-search:focus { border-color: #c89b3c; }
+#${PANEL_ID} .perf-search::placeholder { color: #a09b8c; }
+#${PANEL_ID} .perf-master { flex: 0 0 auto; white-space: nowrap; }
+#${PANEL_ID} .perf-card--locked .perf-opts { pointer-events: none; }
+#${PANEL_ID} .perf-card--locked .perf-actions > .perf-toggle { pointer-events: none; }
+#${PANEL_ID} .perf-card--locked .perf-caret { opacity: 0.45; }
+#${PANEL_ID} .perf-card--locked .perf-chips-label { opacity: 0.45; }
+#${PANEL_ID} .perf-chip:disabled { opacity: 0.45; cursor: default; }
+#${PANEL_ID} .perf-chip:disabled:hover { color: #a09b8c; border-color: #785a28; background: #0a1428; }
+#${PANEL_ID} .perf-chip--on:disabled:hover { color: #010a13; border-color: #c89b3c; background: #c89b3c; }
+
 .perf-update { position: fixed; inset: 0; z-index: 100000; display: flex; align-items: center;
   justify-content: center; background: rgba(1, 10, 19, 0.72); }
 .perf-update-box { width: 430px; box-sizing: border-box; padding: 22px 26px;
@@ -145,9 +160,10 @@ let coords = null;
 const resolved = new Map();
 let availableModules = BUNDLED_MODULES;
 let pendingReload = false;
+let searchQuery = "";
 let runningVersion = version;
 
-let state = { installed: {}, enabled: {}, options: {} };
+let state = { installed: {}, enabled: {}, options: {}, masterLocked: false };
 
 async function loadState() {
   let saved = null;
@@ -160,7 +176,7 @@ async function loadState() {
     saved = null;
   }
   if (saved?.installed && typeof saved.installed === "object") {
-    state = { installed: saved.installed, enabled: saved.enabled ?? {}, options: saved.options ?? {} };
+    state = { installed: saved.installed, enabled: saved.enabled ?? {}, options: saved.options ?? {}, masterLocked: saved.masterLocked === true };
     return;
   }
   saveState();
@@ -172,6 +188,7 @@ function saveState() {
     installed: state.installed,
     enabled: state.enabled,
     options: state.options,
+    masterLocked: state.masterLocked === true,
   };
   try {
     localStorage.setItem(STATE_KEY, JSON.stringify(record));
@@ -524,16 +541,23 @@ function addStyle(name, css) {
   return () => element.remove();
 }
 
+const LCU_TIMEOUT_MS = 10000;
+
 function lcuGet(path, { ttl = 0 } = {}) {
   const now = Date.now();
   const cached = requestCache.get(path);
   if (cached && (cached.pending || cached.expires > now)) return cached.promise;
 
   const entry = { pending: true, expires: 0, promise: null };
-  entry.promise = fetch(path, { headers: { Accept: "application/json" } }).then(async (response) => {
+  const request = fetch(path, { headers: { Accept: "application/json" } }).then(async (response) => {
     if (!response.ok) throw new Error(`LCU ${path} responded ${response.status}`);
     return response.status === 204 ? null : response.json();
   });
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`LCU ${path} timed out`)), LCU_TIMEOUT_MS);
+  });
+  entry.promise = Promise.race([request, timeout]).finally(() => clearTimeout(timer));
   requestCache.set(path, entry);
   entry.promise.then(
     () => {
@@ -605,7 +629,7 @@ function buildOptionRow(mod, option, disabled, onChange) {
   return row;
 }
 
-function buildChips(mod, option) {
+function buildChips(mod, option, locked) {
   const block = el("div", "perf-chip-block");
   block.title = option.description ?? "";
   if (option.label) block.append(el("div", "perf-chips-label", option.label));
@@ -615,6 +639,7 @@ function buildChips(mod, option) {
     const chip = el("button", "perf-chip", item.label);
     chip.type = "button";
     chip.title = item.description ?? "";
+    chip.disabled = Boolean(locked);
     if (getOption(mod.id, key)) chip.classList.add("perf-chip--on");
     chip.addEventListener("click", () => {
       setOption(mod.id, key, !getOption(mod.id, key), false);
@@ -626,17 +651,17 @@ function buildChips(mod, option) {
   return block;
 }
 
-function buildOptions(mod) {
+function buildOptions(mod, locked) {
   const options = registry.get(mod.id)?.options ?? [];
   if (options.length === 0) return null;
   const wrap = el("div", "perf-opts");
   for (const option of options) {
     if (option.type === "chips") {
-      wrap.append(buildChips(mod, option));
+      wrap.append(buildChips(mod, option, locked));
       continue;
     }
     if (!option.children?.length) {
-      wrap.append(buildOptionRow(mod, option));
+      wrap.append(buildOptionRow(mod, option, Boolean(locked)));
       continue;
     }
     const group = el("div", "perf-opt-group");
@@ -647,12 +672,12 @@ function buildOptions(mod) {
     const kids = el("div", "perf-opt-children");
     const childInputs = [];
     for (const child of option.children) {
-      const childRow = buildOptionRow(mod, child, !getOption(mod.id, option.key));
+      const childRow = buildOptionRow(mod, child, !getOption(mod.id, option.key) || Boolean(locked));
       childInputs.push(childRow.querySelector("input"));
       kids.append(childRow);
     }
-    const master = buildOptionRow(mod, option, false, (checked) => {
-      for (const input of childInputs) input.disabled = !checked;
+    const master = buildOptionRow(mod, option, Boolean(locked), (checked) => {
+      for (const input of childInputs) input.disabled = !checked || Boolean(locked);
       setOption(mod.id, option.key, checked, false);
     });
     const groupKey = `${mod.id}:${option.key}`;
@@ -674,12 +699,13 @@ function buildOptions(mod) {
   return wrap;
 }
 
-function buildToggle(mod) {
+function buildToggle(mod, locked) {
   const label = el("label", "perf-toggle");
   label.title = `Enable ${mod.name}`;
   const input = el("input");
   input.type = "checkbox";
   input.checked = isPluginEnabled(mod.id);
+  input.disabled = Boolean(locked);
   input.setAttribute("aria-label", `Enable ${mod.name}`);
   input.addEventListener("change", () => setPluginEnabled(mod.id, input.checked));
   label.append(input, el("span", "perf-box"));
@@ -711,20 +737,90 @@ function buildUninstallButton(mod) {
   return button;
 }
 
-function buildCard(mod) {
+function installedModules() {
+  return getAvailableModules().filter(isInstalled);
+}
+
+// The master switch is a UI lock only: it greys out every card's settings and
+// toggle (same treatment as a disabled parent's child options) while each
+// plugin keeps its own enabled/disabled state untouched.
+function masterLocked() {
+  return installedModules().length > 0 && state.masterLocked === true;
+}
+
+function disableAllPlugins() {
+  state.masterLocked = true;
+  saveState();
+  refreshPanel();
+}
+
+function enableAllPlugins() {
+  state.masterLocked = false;
+  saveState();
+  refreshPanel();
+}
+
+function applySearchFilter(panel = document.getElementById(PANEL_ID)) {
+  if (!panel) return;
+  let shown = 0;
+  for (const card of panel.querySelectorAll(".perf-card")) {
+    const match = !searchQuery || (card.dataset.search ?? "").includes(searchQuery);
+    card.style.display = match ? "" : "none";
+    if (match) shown += 1;
+  }
+  const scroller = panel.querySelector("lol-uikit-scrollable");
+  let empty = panel.querySelector(".perf-no-match");
+  if (shown === 0 && getAvailableModules().length > 0) {
+    if (!empty && scroller) {
+      empty = el("div", "perf-empty perf-no-match", "No plugins match your search.");
+      scroller.append(empty);
+    }
+  } else if (empty) {
+    empty.remove();
+  }
+}
+
+function buildTools() {
+  const tools = el("div", "perf-tools");
+
+  const search = el("input", "perf-search");
+  search.type = "search";
+  search.placeholder = "Search plugins...";
+  search.value = searchQuery;
+  search.setAttribute("aria-label", "Search plugins");
+  search.addEventListener("input", () => {
+    searchQuery = search.value.trim().toLowerCase();
+    applySearchFilter();
+  });
+
+  const master = el("button", "perf-btn perf-master", masterLocked() ? "Enable All" : "Disable All");
+  master.type = "button";
+  master.disabled = installedModules().length === 0;
+  master.addEventListener("click", () => {
+    if (masterLocked()) enableAllPlugins();
+    else disableAllPlugins();
+  });
+
+  tools.append(search, master);
+  return tools;
+}
+
+function buildCard(mod, locked) {
   const installed = isInstalled(mod);
   const card = el("div", installed ? "perf-card" : "perf-card perf-card--missing");
+  if (locked) card.classList.add("perf-card--locked");
+  card.dataset.search = `${mod.name} ${mod.description}`.toLowerCase();
 
   const info = el("div", "perf-info");
   const name = el("div", "perf-name", mod.name);
   name.append(el("span", "perf-version", `v${registry.get(mod.id)?.version ?? mod.version}`));
   info.append(name);
   if (mod.description) info.append(el("div", "perf-desc", mod.description));
-  const optionList = buildOptions(mod);
+  const optionList = buildOptions(mod, locked);
   if (optionList) info.append(optionList);
 
   const actions = el("div", "perf-actions");
-  if (installed) actions.append(buildToggle(mod));
+  if (installed) actions.append(buildToggle(mod, locked));
   actions.append(installed ? buildUninstallButton(mod) : buildInstallButton(mod));
 
   card.append(info, actions);
@@ -734,6 +830,8 @@ function buildCard(mod) {
 function buildPanel() {
   const panel = el("div");
   panel.id = PANEL_ID;
+  panel.append(buildTools());
+
   const scroller = el("lol-uikit-scrollable");
   panel.append(scroller);
 
@@ -742,7 +840,9 @@ function buildPanel() {
     scroller.append(el("div", "perf-empty", "No plugins are available."));
     return panel;
   }
-  for (const mod of modules) scroller.append(buildCard(mod));
+  const locked = masterLocked();
+  for (const mod of modules) scroller.append(buildCard(mod, locked));
+  applySearchFilter(panel);
   return panel;
 }
 

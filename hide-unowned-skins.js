@@ -1,4 +1,4 @@
-export const version = "2.3.2";
+export const version = "2.4.0";
 
 const PLUGIN_ID = "hide-unowned-skins";
 const STYLE_ID = "perfectionist-hide-unowned-skins-style";
@@ -25,7 +25,7 @@ const OBSERVER_OPTIONS = {
   childList: true,
   subtree: true,
   attributes: true,
-  attributeFilter: ["class", "style"],
+  attributeFilter: ["class", "style", "src"],
 };
 
 let filterActive = true;
@@ -160,7 +160,14 @@ function installFetchFilter() {
   if (!rawFetch) rawFetch = original;
 
   const wrapped = function (input, init) {
-    const url = typeof input === "string" ? input : (input && input.url) || "";
+    const url =
+    typeof input === "string"
+      ? input
+      : typeof input?.url === "string"
+        ? input.url
+        : typeof input?.href === "string"
+          ? input.href
+          : "";
     const promise = original.call(this, input, init);
     if (!filterActive || url.split("?")[0].indexOf(CAROUSEL_URI) === -1) return promise;
     return promise.then((response) => {
@@ -273,6 +280,7 @@ let sessionMisses = 0;
 let championMisses = 0;
 let renderObserver = null;
 const repackOriginals = new Map();
+const lastAppliedLeft = new Map();
 const skinSuffixCache = new Map();
 let repackTimer = null;
 let removeStyle = null;
@@ -282,7 +290,7 @@ function logError(scope, error) {
 }
 
 function skinSuffixOf(text) {
-  const numbered = text.match(/Skins\/Skin(\d+)\//i) ?? text.match(/Skin(\d+)\//);
+  const numbered = text.match(/Skins\/Skin(\d+)\//i) ?? text.match(/skin(\d+)\//i);
   if (numbered) return Number(numbered[1]);
   return /Skins\/Base\//i.test(text) ? 0 : null;
 }
@@ -311,7 +319,16 @@ function hideTargetFor(item) {
   return target;
 }
 
+function pruneRepack() {
+  for (const item of [...repackOriginals.keys()]) {
+    if (item.isConnected) continue;
+    repackOriginals.delete(item);
+    lastAppliedLeft.delete(item);
+  }
+}
+
 function repackVisibleItems(items) {
+  pruneRepack();
   const visible = items.filter((item) => !item.classList.contains(HIDDEN_CLASS));
   if (visible.length < 2) {
     restoreRepack();
@@ -340,15 +357,17 @@ function repackVisibleItems(items) {
 
   const setLeft = (item, x) => {
     const want = `${x}px`;
-    if (item.style.getPropertyValue("left") !== want || item.style.getPropertyPriority("left") !== "important") {
-      if (!repackOriginals.has(item)) {
-        repackOriginals.set(item, {
-          value: item.style.getPropertyValue("left"),
-          priority: item.style.getPropertyPriority("left"),
-        });
-      }
+    const current = item.style.getPropertyValue("left");
+    const priority = item.style.getPropertyPriority("left");
+    const last = lastAppliedLeft.get(item);
+    const clientMoved = last !== undefined && (current !== last || priority !== "important");
+    if (clientMoved || !repackOriginals.has(item)) {
+      repackOriginals.set(item, { value: current, priority });
+    }
+    if (current !== want || priority !== "important") {
       item.style.setProperty("left", want, "important");
     }
+    lastAppliedLeft.set(item, want);
   };
 
   items.forEach((item, index) => {
@@ -367,12 +386,16 @@ function repackVisibleItems(items) {
 }
 
 function restoreRepack() {
-  if (repackOriginals.size === 0) return;
   for (const [item, original] of repackOriginals) {
+    if (!item.isConnected) continue;
+    const current = item.style.getPropertyValue("left");
+    const last = lastAppliedLeft.get(item);
+    if (last !== undefined && (current !== last || item.style.getPropertyPriority("left") !== "important")) continue;
     if (original.value) item.style.setProperty("left", original.value, original.priority || undefined);
     else item.style.removeProperty("left");
   }
   repackOriginals.clear();
+  lastAppliedLeft.clear();
 }
 
 function applyAll() {
@@ -456,8 +479,18 @@ async function loadCarouselOrder() {
   try {
     let skins;
     if (rawFetch) {
-      const response = await rawFetch(CAROUSEL_URI, { headers: { Accept: "application/json" } });
-      skins = response.ok ? await response.json() : null;
+      let timer = null;
+      try {
+        const response = await Promise.race([
+          rawFetch(CAROUSEL_URI, { headers: { Accept: "application/json" } }),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error("carousel request timed out")), 8000);
+          }),
+        ]);
+        skins = response.ok ? await response.json() : null;
+      } finally {
+        clearTimeout(timer);
+      }
     } else {
       skins = await api.lcu.get(CAROUSEL_URI);
     }
@@ -478,9 +511,13 @@ function nextOwnedSkin(owned, fromId, direction) {
 async function selectSkin(skinId) {
   selectedSkinId = skinId;
   selectInFlight = true;
+  const guard = setTimeout(() => {
+    selectInFlight = false;
+  }, 8000);
   try {
     await api.lcu.send("PATCH", SELECTION_URI, { selectedSkinId: skinId });
   } finally {
+    clearTimeout(guard);
     selectInFlight = false;
   }
 }
@@ -557,6 +594,10 @@ function updateForSession(session, selection) {
   applyAllGuarded();
 }
 
+function onWindowResize() {
+  scheduleRepack();
+}
+
 function scheduleRefresh() {
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(pollSession, REFRESH_DEBOUNCE_MS);
@@ -596,6 +637,7 @@ function onEnable(utils) {
   removeStyle = api.addStyle(STYLE_ID, CSS);
 
   renderObserver = new MutationObserver(() => {
+    ensureSourceFilter();
     const item = document.querySelector(SKIN_ITEM_SELECTOR);
     if (!item && !document.querySelector(DOT_SELECTOR)) return;
     applyAllGuarded();
@@ -603,11 +645,13 @@ function onEnable(utils) {
   });
   renderObserver.observe(document.documentElement ?? document, OBSERVER_OPTIONS);
 
+  window.addEventListener("resize", onWindowResize);
   unsubscribe = api.subscribe(SESSION_URI, onSessionPush);
   pollSession();
 }
 
 function onDisable() {
+  window.removeEventListener("resize", onWindowResize);
   unsubscribe?.();
   unsubscribe = null;
   clearTimeout(refreshTimer);
