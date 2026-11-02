@@ -5,6 +5,7 @@ const STYLE_ID = "perfectionist-hide-unowned-skins-style";
 const HIDDEN_CLASS = "perf-unowned-skin-hidden";
 const SKIN_ITEM_SELECTOR = ".skin-selection-item";
 const DOT_SELECTOR = ".skin-selection-indicator-selector";
+const SELECTED_CLASS = "skin-selection-item-selected";
 const SESSION_URI = "/lol-champ-select/v1/session";
 const SELECTION_URI = "/lol-champ-select/v1/session/my-selection";
 const CAROUSEL_URI = "/lol-champ-select/v1/skin-carousel-skins";
@@ -270,6 +271,7 @@ let allSkinIds = null;
 let currentChampionId = null;
 let carouselOrder = [];
 let selectedSkinId = null;
+let lastServerSkinId = null;
 let failure = null;
 let requestToken = 0;
 let refreshTimer = null;
@@ -284,6 +286,10 @@ const lastAppliedLeft = new Map();
 const skinSuffixCache = new Map();
 let repackTimer = null;
 let removeStyle = null;
+let lastSelectedDomIndex = -1;
+let navFixAt = 0;
+let lastSkipSignature = null;
+const widthCache = new Map();
 
 function logError(scope, error) {
   console.error(`[Perfectionist] Hide Unowned Skins: ${scope}`, error);
@@ -327,6 +333,39 @@ function pruneRepack() {
   }
 }
 
+function guardSelection(items) {
+  const selectedIndex = items.findIndex((item) => item.classList.contains(SELECTED_CLASS));
+  if (selectedIndex < 0) return false;
+  const previous = lastSelectedDomIndex;
+  lastSelectedDomIndex = selectedIndex;
+  const selected = items[selectedIndex];
+  const hidden = selected.classList.contains(HIDDEN_CLASS) || Boolean(selected.parentElement?.classList.contains(HIDDEN_CLASS));
+  if (!hidden) {
+    lastSkipSignature = null;
+    return false;
+  }
+
+  const visible = items.map((item, index) => (item.classList.contains(HIDDEN_CLASS) ? -1 : index)).filter((index) => index >= 0);
+  if (visible.length === 0) return false;
+
+  const forward = previous < 0 ? true : selectedIndex >= previous;
+  const target = forward
+    ? (visible.find((index) => index > selectedIndex) ?? visible[0])
+    : ([...visible].reverse().find((index) => index < selectedIndex) ?? visible[visible.length - 1]);
+  const skinId = readSkinId(items[target]);
+  if (skinId === null) return false;
+
+  const signature = `${selectedIndex}:${skinId}`;
+  if (lastSkipSignature === signature) return true;
+  const now = Date.now();
+  if (now < navFixAt) return true;
+  navFixAt = now + 150;
+  lastSkipSignature = signature;
+  lastSelectedDomIndex = target;
+  selectSkin(skinId).catch((error) => logError("could not skip the unowned skin.", error));
+  return true;
+}
+
 function repackVisibleItems(items) {
   pruneRepack();
   const visible = items.filter((item) => !item.classList.contains(HIDDEN_CLASS));
@@ -343,7 +382,14 @@ function repackVisibleItems(items) {
   if (!anchor) anchor = visible[Math.floor(visible.length / 2)];
   const anchorDomIndex = items.indexOf(anchor);
 
-  const widthOf = (item) => item.getBoundingClientRect().width || (item === anchor ? 117 : 73);
+  const widthOf = (item) => {
+    const measured = item.getBoundingClientRect().width;
+    if (measured > 0) {
+      widthCache.set(item, measured);
+      return measured;
+    }
+    return widthCache.get(item) ?? (item === anchor ? 117 : 73);
+  };
   const toPx = (item) => {
     const raw = item.style.left || "0";
     if (raw.endsWith("px")) return parseFloat(raw);
@@ -424,8 +470,10 @@ function applyAll() {
     else if (dotsHidden === 0 && dotList.hasAttribute("data-perf-dots")) dotList.removeAttribute("data-perf-dots");
   }
 
-  if (ownedSkinIds !== null && hidden > 0) scheduleRepack();
-  else if (hidden === 0) restoreRepack();
+  if (ownedSkinIds !== null && hidden > 0) {
+    if (guardSelection(items)) runRepack();
+    else scheduleRepack();
+  } else if (hidden === 0) restoreRepack();
 }
 
 function scheduleRepack() {
@@ -585,11 +633,13 @@ function updateForSession(session, selection) {
 
   const knownUnownedSkin = allSkinIds !== null && allSkinIds.has(serverSkinId) && !ownedSkinIds.has(serverSkinId);
   if (!selectInFlight && knownUnownedSkin) {
-    const fallback = nextOwnedSkin(ownedSkinIds, 0, 1);
+    const direction = lastServerSkinId !== null && serverSkinId !== null && serverSkinId < lastServerSkinId ? -1 : 1;
+    const fallback = nextOwnedSkin(ownedSkinIds, serverSkinId ?? 0, direction) ?? nextOwnedSkin(ownedSkinIds, 0, 1);
     if (fallback !== null) {
       selectSkin(fallback).catch((error) => logError("could not correct the selected skin.", error));
     }
   }
+  if (!selectInFlight && belongsToChampion && ownedSkinIds.has(serverSkinId)) lastServerSkinId = serverSkinId;
 
   applyAllGuarded();
 }

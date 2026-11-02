@@ -67,6 +67,28 @@ Built for [Pengu Loader](https://pengu.lol)
       auto-open mystery loot (icons, ward skins), and auto-open chests with keys.
     </td>
   </tr>
+  <tr>
+    <td>&nbsp;</td>
+  </tr>
+  <tr>
+    <th align="left">🚀 BetterClient</th>
+  </tr>
+  <tr>
+    <td>
+      Debloats the client without changing how it looks or behaves: telemetry and analytics calls are dropped,
+      duplicate requests are merged, and immutable payloads (game-data assets and rune definitions) are cached
+      instead of re-downloaded and re-parsed every time a screen renders.
+      <br><br>
+      Tiles are marked for asynchronous decode, so building bot lists, champion grids and the tournament-draft
+      board no longer stalls the UI, and the in-game un-gate pass backs off to one check every five seconds once it
+      has nothing left to unlock.
+      <br><br>
+      It also keeps the social panel, friend requests and settings usable while a game is running.
+      <br><br>
+      For memory creep, <code>tools/betterclient-monitor.mjs</code> logs per-process RAM and client phase to CSV and
+      diffs heap snapshots.
+    </td>
+  </tr>
 </table>
 
 ## Install

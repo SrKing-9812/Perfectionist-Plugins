@@ -6,7 +6,7 @@ const PANEL_ID = "perfectionist-plugins-panel";
 const STYLE_ID = "perfectionist-plugins-style";
 const TAB_TITLE = "Perfectionism";
 
-export const version = "1.8.0";
+export const version = "2.0.0";
 
 const PKG = "perfectionist-plugins";
 const CDN = "https://cdn.jsdelivr.net/npm";
@@ -23,6 +23,13 @@ const BUNDLED_MODULES = [
     core: true,
   },
   {
+    id: "better-client",
+    file: "better-client.js",
+    name: "BetterClient",
+    version: "1.2.0",
+    description: "Debloats the client: blocks telemetry, merges duplicate requests, caches immutable data, decodes images asynchronously and fixes several bugs.",
+  },
+  {
     id: "ban-blocker",
     file: "ban-blocker.js",
     name: "Ban Blocker",
@@ -30,18 +37,18 @@ const BUNDLED_MODULES = [
     description: "During bans, blocking a teammate instantly claims the champion they hover to ban.",
   },
   {
-    id: "hide-unowned-skins",
-    file: "hide-unowned-skins.js",
-    name: "Hide Unowned Skins",
-    version: "2.4.0",
-    description: "In champion select, only shows the skins you own for the picked champion.",
-  },
-  {
     id: "unlock-profile-skins",
     file: "unlock-profile-skins.js",
     name: "Unlock Profile Skins",
     version: "1.2.1",
     description: "Unlocks every skin in the Set profile background window.",
+  },
+  {
+    id: "hide-unowned-skins",
+    file: "hide-unowned-skins.js",
+    name: "Hide Unowned Skins",
+    version: "2.4.0",
+    description: "In champion select, only shows the skins you own for the picked champion.",
   },
   {
     id: "auto-claimer",
@@ -741,9 +748,6 @@ function installedModules() {
   return getAvailableModules().filter(isInstalled);
 }
 
-// The master switch is a UI lock only: it greys out every card's settings and
-// toggle (same treatment as a disabled parent's child options) while each
-// plugin keeps its own enabled/disabled state untouched.
 function masterLocked() {
   return installedModules().length > 0 && state.masterLocked === true;
 }
