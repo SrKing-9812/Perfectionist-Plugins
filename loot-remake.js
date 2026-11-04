@@ -65,20 +65,25 @@ const CSS = `
 #${ROOT_ID} .pl-subnav-item:hover { color: #f0e6d2; }
 #${ROOT_ID} .pl-subnav-item--on { color: #f0e6d2; border-bottom-color: #c89b3c; }
 #${ROOT_ID} .pl-tabs { position: absolute; left: 1px; top: 125px; width: 60px; display: flex; flex-direction: column; gap: 6px; }
-#${ROOT_ID} .pl-tab { width: 32px; height: 36px; display: flex; align-items: center; justify-content: center;
+#${ROOT_ID} .pl-tab { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
   cursor: pointer; opacity: 0.5; border: 1px solid transparent; box-sizing: border-box; }
 #${ROOT_ID} .pl-tab img { width: 22px; height: 22px; }
 #${ROOT_ID} .pl-tab:hover { opacity: 0.85; }
-#${ROOT_ID} .pl-tab--on { opacity: 1; border-color: #c89b3c; background: rgba(200, 155, 60, 0.12); }
+#${ROOT_ID} .pl-tab--on { opacity: 1; height: 36px; border-color: #c89b3c; background: rgba(200, 155, 60, 0.12); }
 #${ROOT_ID} .pl-tools { position: absolute; left: 61px; top: 125px; display: flex; gap: 10px; align-items: center; }
-#${ROOT_ID} .pl-search { width: 194px; height: 32px; box-sizing: border-box; padding: 0 10px 0 30px;
-  font-family: "LoL Body", Arial, sans-serif; font-size: 12px; color: #f0e6d2; background: rgba(1, 10, 19, 0.9) url("/fe/lol-static-assets/images/uikit/magnifying-glass-icon.png") 9px center / 14px no-repeat;
-  border: 1px solid #785a28; outline: none; }
-#${ROOT_ID} .pl-search:focus { border-color: #c89b3c; }
+#${ROOT_ID} .pl-search { width: 200px; height: 32px; box-sizing: border-box; padding: 0 10px 0 30px;
+  font-family: "LoL Body", Arial, sans-serif; font-size: 12px; letter-spacing: 1.2px; color: #a09b8c;
+  background: rgba(0, 0, 0, 0.7) url("/fe/lol-static-assets/images/uikit/magnifying-glass-icon.png") 9px center / 14px no-repeat;
+  border: 1px solid #785a28; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25); outline: none; }
+#${ROOT_ID} .pl-search:focus { border-color: #c89b3c; color: #f0e6d2; }
 #${ROOT_ID} .pl-search::placeholder { color: #a09b8c; }
-#${ROOT_ID} .pl-sort { width: 118px; height: 32px; box-sizing: border-box; padding: 0 8px; font-family: "LoL Body", Arial, sans-serif;
-  font-size: 12px; color: #cdbe91; background: #010a13; border: 1px solid #785a28; outline: none; }
-#${ROOT_ID} .pl-sort:focus { border-color: #c89b3c; }
+#${ROOT_ID} .pl-sort { width: 118px; height: 32px; box-sizing: border-box; padding: 0 24px 0 10px;
+  appearance: none; -webkit-appearance: none; cursor: pointer;
+  font-family: "LoL Body", Arial, sans-serif; font-size: 12px; letter-spacing: 1.1px; color: #a09b8c;
+  background: rgba(0, 0, 0, 0.7) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M0 0h10L5 6z' fill='%23c8aa6e'/></svg>") right 8px center / 10px 6px no-repeat;
+  border: 1px solid #785a28; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25); outline: none; }
+#${ROOT_ID} .pl-sort:focus { border-color: #c89b3c; color: #f0e6d2; }
+#${ROOT_ID} .pl-sort option { background: #010a13; color: #cdbe91; }
 #${ROOT_ID} .pl-panel { position: absolute; left: 61px; top: 177px; width: 342px; height: 445px;
   overflow-y: auto; overflow-x: hidden; }
 #${ROOT_ID} .pl-panel::-webkit-scrollbar { width: 8px; }
@@ -104,7 +109,12 @@ const CSS = `
   color: #f0e6d2; text-shadow: 0 0 3px #000, 0 0 6px #000; pointer-events: none; }
 #${ROOT_ID} .pl-new { position: absolute; right: 3px; top: 3px; width: 6px; height: 6px; z-index: 2;
   border-radius: 50%; background: #c89b3c; box-shadow: 0 0 5px #c89b3c; pointer-events: none; }
-#${ROOT_ID} .pl-detail { position: absolute; left: 430px; top: 177px; width: 420px; }
+#${ROOT_ID} .pl-detail { position: absolute; left: 430px; top: 177px; width: 420px; display: none; }
+#${ROOT_ID} .pl-detail--on { display: block; }
+#${ROOT_ID} .pl-backdrop--static { background: radial-gradient(120% 90% at 30% 20%, #0a1a2b 0%, #010a19 55%, #010a13 100%); }
+#${ROOT_ID} .pl-toast { position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 7;
+  padding: 9px 16px; background: rgba(1, 10, 19, 0.96); border: 1px solid #785a28;
+  font-size: 12px; letter-spacing: 0.4px; color: #cdbe91; white-space: nowrap; }
 #${ROOT_ID} .pl-detail-art { width: 100%; height: 236px; background-size: cover; background-position: center;
   border: 1px solid rgba(120, 90, 40, 0.6); box-sizing: border-box; background-color: #0a1428; }
 #${ROOT_ID} .pl-detail-name { margin-top: 12px; font-family: "LoL Display", "Times New Roman", Times, serif;
@@ -126,6 +136,7 @@ const CSS = `
   font-size: 12px; line-height: 1.5; color: #a09b8c; }
 #${ROOT_ID} .pl-tip b { display: block; color: #f0e6d2; font-family: "LoL Display", "Times New Roman", Times, serif;
   font-size: 12px; letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 3px; }
+#${ROOT_ID} .pl-tip-value { color: #c8aa6e; }
 #${ROOT_ID} .pl-modal { position: absolute; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center;
   background: rgba(1, 10, 19, 0.72); }
 #${ROOT_ID} .pl-modal-box { width: 430px; box-sizing: border-box; padding: 22px 26px; background: #010a13;
@@ -327,12 +338,13 @@ function renderActions() {
 function renderDetail() {
   const box = root?.querySelector(".pl-detail");
   if (!box) return;
-  const item = items.find((entry) => entry.lootId === selectedId) ?? items[0];
+  const item = selectedId ? items.find((entry) => entry.lootId === selectedId) : null;
   if (!item) {
+    box.classList.remove("pl-detail--on");
     box.innerHTML = "";
     return;
   }
-  selectedId = item.lootId;
+  box.classList.add("pl-detail--on");
   const art = imageOf(item);
   box.innerHTML = `
     <div class="pl-detail-art"${art ? ` style="background-image:url('${esc(art)}')"` : ""}></div>
@@ -454,6 +466,7 @@ function jumpToRiotTab(label) {
 
 function open() {
   if (root || failed) return;
+  const backdropMode = window.PerfectionistLootBackdrop === "static" ? "static" : "video";
   try {
     const screenRoot = document.querySelector(".screen-root");
     if (!screenRoot) throw new Error("no screen root");
@@ -469,7 +482,9 @@ function open() {
     root = document.createElement("div");
     root.id = ROOT_ID;
     root.innerHTML = `
-      <video class="pl-backdrop" src="/fe/lol-loot/assets/videos/background_ambient.webm" autoplay muted loop playsinline></video>
+      ${backdropMode === "video"
+        ? '<video class="pl-backdrop" src="/fe/lol-loot/assets/videos/background_ambient.webm" autoplay muted loop playsinline></video>'
+        : '<div class="pl-backdrop pl-backdrop--static"></div>'}
       <div class="pl-veil"></div>
       <div class="pl-subnav"></div>
       <div class="pl-tabs"></div>
@@ -495,6 +510,7 @@ function open() {
       video.play?.().catch(() => {});
     }
     markActive();
+    selectedId = null;
     observer = new IntersectionObserver(onIntersect, { rootMargin: "240px" });
     refresh().catch(fail);
     unsubscribe = api?.subscribe?.(LOOT_URI, scheduleRefresh) ?? null;
@@ -540,7 +556,7 @@ function confirmAction(action) {
   modal.innerHTML = `
     <div class="pl-modal-box">
       <div class="pl-modal-title">${esc(actionLabel(action))} ${esc(nameOf(item))}</div>
-      <div class="pl-modal-body">${esc(metaOf(item))}.${esc(cost)}</div>
+      <div class="pl-modal-body">${esc(metaOf(item))}.${esc(cost)} The original Loot page opens to finish this.</div>
       <div class="pl-modal-buttons">
         <button type="button" class="pl-action" data-modal="cancel">Cancel</button>
         <button type="button" class="pl-action" data-modal="confirm">${esc(actionLabel(action))}</button>
@@ -549,18 +565,21 @@ function confirmAction(action) {
   root.append(modal);
 }
 
-async function runAction() {
-  const action = pendingAction;
-  const modal = root?.querySelector(".pl-modal");
-  modal?.remove();
+function toast(message) {
+  if (!root) return;
+  const el = document.createElement("div");
+  el.className = "pl-toast";
+  el.textContent = message;
+  root.append(el);
+  setTimeout(() => el.remove(), 2800);
+}
+
+function runAction() {
   pendingAction = null;
-  if (!action || !selectedId) return;
-  try {
-    await api.lcu.send("POST", `/lol-loot/v1/recipes/${encodeURIComponent(action.name)}/craft`, [selectedId]);
-    await refresh();
-  } catch (error) {
-    console.warn("[Loot Remake] action failed.", error);
-  }
+  root?.querySelector(".pl-modal")?.remove();
+  toast("Opening the original Loot page to finish this.");
+  mountRiotLoot();
+  jumpToRiotTab("CRAFTING");
 }
 
 function onInput(event) {
@@ -651,7 +670,9 @@ function onHover(event) {
   const item = items.find((entry) => entry.lootId === tile.dataset.id);
   if (!item) return;
   const rect = tile.getBoundingClientRect();
-  tip.innerHTML = `<b>${esc(nameOf(item))}</b>${esc(metaOf(item))}`;
+  const disenchant = Number(item.disenchantValue) > 0 ? `<div>Dismantle into Essence <span class="pl-tip-value">+${esc(item.disenchantValue)}</span></div>` : "";
+  const upgrade = Number(item.upgradeEssenceValue) > 0 ? `<div>Upgrade into Permanent <span class="pl-tip-value">${esc(item.upgradeEssenceValue)}</span></div>` : "";
+  tip.innerHTML = `<b>${esc(nameOf(item) || item.lootId)}</b>${esc(metaOf(item))}${disenchant}${upgrade}`;
   tip.style.display = "block";
   const width = tip.offsetWidth || 220;
   const height = tip.offsetHeight || 60;
