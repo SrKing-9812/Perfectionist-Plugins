@@ -674,6 +674,7 @@ const EVENT_TYPES = ["mousedown", "mouseup", "click", "pointerdown", "pointerup"
 function attachListeners() {
   for (const type of EVENT_TYPES) window.addEventListener(type, onNavClick, true);
   window.addEventListener("click", onClick, true);
+  window.addEventListener("pointerup", onClick, true);
   window.addEventListener("mouseover", onHover, true);
   window.addEventListener("mouseout", onHover, true);
   window.addEventListener("input", onInput, true);
@@ -684,6 +685,7 @@ function attachListeners() {
 function detachListeners() {
   for (const type of EVENT_TYPES) window.removeEventListener(type, onNavClick, true);
   window.removeEventListener("click", onClick, true);
+  window.removeEventListener("pointerup", onClick, true);
   window.removeEventListener("mouseover", onHover, true);
   window.removeEventListener("mouseout", onHover, true);
   window.removeEventListener("input", onInput, true);
