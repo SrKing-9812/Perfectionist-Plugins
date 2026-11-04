@@ -1,5 +1,5 @@
 const PLUGIN_ID = "better-client";
-const version = "1.3.0";
+const version = "1.4.0";
 
 const MAX_CACHE_ENTRIES = 24;
 const MAX_CACHE_ENTRY_BYTES = 2 * 1024 * 1024;
@@ -7,11 +7,13 @@ const MAX_CACHE_BYTES = 16 * 1024 * 1024;
 const UNGATE_MS = 1000;
 const UNGATE_IDLE_MS = 5000;
 const UNGATE_BACKOFF_AFTER = 20;
-const PHASE_POLL_MS = 5000;
-const IMAGE_BATCH = 200;
+const PHASE_POLL_FALLBACK_MS = 15000;
+const IMAGE_BATCH = 160;
+const IMAGE_QUEUE_LIMIT = 4000;
+const DECISION_CACHE_LIMIT = 256;
 
 const TELEMETRY_HOST = /(^|\.)(telemetry|analytics|metrics|sentry|bugsnag|crash-?report(er)?|pulse|tracking|beacon|datadog|loggly)(\.|:|$)/i;
-const TELEMETRY_PATH = /(^|\/)(lol-telemetry|lol-analytics|lol-metrics|lol-rms|rms|lol-sentry|lol-crash|telemetry|analytics|metrics|sentry|bugsnag|crash-?report\w*|tracking|beacon)(\/|$)/i;
+const TELEMETRY_PATH = /(^|\/)(lol-telemetry|lol-analytics|lol-metrics|lol-rms|rms|lol-sentry|lol-crash|telemetry|analytics|metrics|sentry|bugsnag|crash-?report\w*|tracking|beacon)(\/|\?|$)/i;
 const ASSET_PATH = /^\/lol-game-data\/assets\//i;
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
@@ -34,7 +36,32 @@ const UNGATE_SELECTORS = [
   ".lol-navigation-item",
   "[class*='friends-list']",
 ];
+const UNGATE_SELECTOR = UNGATE_SELECTORS.join(",");
 const BLOCK_MARKER = "[disabled], [aria-disabled='true'], [style*='pointer-events']";
+
+const PERF_STYLE_ID = "perfectionist-better-client-performance";
+const PERFORMANCE_CSS = `
+[class*="blur"], [class*="Blur"], [class*="backdrop"], [class*="Backdrop"] {
+  filter: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+[class*="particle"], [class*="Particle"], [class*="parallax"], [class*="Parallax"],
+[class*="animated-background"], [class*="animatedBackground"], [class*="glow"], [class*="Glow"] {
+  animation: none !important;
+  transition: none !important;
+}
+[class*="background"] video, [class*="Background"] video { display: none !important; }
+`;
+
+const OPTIONS = [
+  {
+    key: "performanceMode",
+    label: "Performance mode",
+    description: "Turns off background blur, decorative animation and looping background video to save GPU and CPU on weaker machines.",
+    default: false,
+  },
+];
 
 let api = null;
 let active = false;
@@ -44,10 +71,14 @@ let restores = [];
 let ungateTimer = null;
 let ungateIdle = 0;
 let phaseTimer = null;
+let phaseWatchListener = null;
+let performanceMode = false;
+let removePerformanceStyle = null;
 let cacheBytes = 0;
 
 const cache = new Map();
 const inflight = new Map();
+const blockDecisions = new Map();
 
 function baseHref() {
   try {
@@ -70,11 +101,24 @@ function isLocalHost(host) {
 }
 
 function isTelemetryUrl(raw, base) {
-  const url = resolveUrl(raw, base);
-  if (!url || url.protocol === "data:" || url.protocol === "blob:") return false;
-  if (ASSET_PATH.test(url.pathname)) return false;
-  if (isLocalHost(url.hostname)) return TELEMETRY_PATH.test(url.pathname);
-  return TELEMETRY_HOST.test(url.hostname) || TELEMETRY_PATH.test(url.pathname);
+  const text = typeof raw === "string" ? raw : urlOf(raw);
+  const memo = blockDecisions.get(text);
+  if (memo !== undefined) return memo;
+
+  let verdict;
+  if (text.startsWith("/") && !text.startsWith("//")) {
+    verdict = !ASSET_PATH.test(text) && TELEMETRY_PATH.test(text);
+  } else {
+    const url = resolveUrl(text, base);
+    if (!url || url.protocol === "data:" || url.protocol === "blob:") verdict = false;
+    else if (ASSET_PATH.test(url.pathname)) verdict = false;
+    else if (isLocalHost(url.hostname)) verdict = TELEMETRY_PATH.test(url.pathname);
+    else verdict = TELEMETRY_HOST.test(url.hostname) || TELEMETRY_PATH.test(url.pathname);
+  }
+
+  if (blockDecisions.size >= DECISION_CACHE_LIMIT) blockDecisions.clear();
+  blockDecisions.set(text, verdict);
+  return verdict;
 }
 
 function shouldBlockUrl(raw, base) {
@@ -196,27 +240,30 @@ function createFetch(env) {
 
   function betterFetch(input, init) {
     const raw = urlOf(input);
-    const method = methodOf(input, init);
 
     if (active && shouldBlockUrl(raw)) {
       return Promise.resolve(emptyJsonResponse(env));
     }
 
-    const url = resolveUrl(raw);
-    const local = url ? isLocalHost(url.hostname) : false;
-    const cacheable = local && method === "GET";
-    const key = `${method} ${url ? url.origin + url.pathname + url.search : raw}`;
-
-    if (cacheable && active) {
-      const pending = inflight.get(key);
-      if (pending) {
-        return pending.then((response) => (response?.clone ? response.clone() : response));
-      }
+    const method = methodOf(input, init);
+    if (method !== "GET" && method !== "HEAD") {
+      return native(input, init);
     }
 
-    if (cacheable && active) {
-      const ttl = staticTtl(url?.pathname);
-      const hit = ttl ? cache.get(key) : null;
+    const url = resolveUrl(raw);
+    if (!url || !isLocalHost(url.hostname)) {
+      return native(input, init);
+    }
+
+    const key = `${method} ${url.pathname}${url.search}`;
+    const pending = inflight.get(key);
+    if (pending) {
+      return pending.then((response) => (response?.clone ? response.clone() : response));
+    }
+
+    const ttl = active ? staticTtl(url.pathname) : 0;
+    if (ttl) {
+      const hit = cache.get(key);
       if (hit && Date.now() - hit.at < hit.ttl) {
         return Promise.resolve(hit.res.clone());
       }
@@ -227,17 +274,16 @@ function createFetch(env) {
     if (dataPath && active && phase === "ChampSelect") {
       request = repairChampSelect(input, init, request, dataPath);
     }
-    if (local && (method === "GET" || method === "HEAD")) {
-      inflight.set(key, request);
-      const done = () => inflight.delete(key);
-      request.then(done, done);
-      if (cacheable) {
-        request.then((response) => {
-          const ttl = staticTtl(url?.pathname);
-          if (!response?.ok || !ttl || !active) return;
-          storeInCache(key, ttl, response);
-        }, () => {});
-      }
+
+    inflight.set(key, request);
+    const done = () => inflight.delete(key);
+    request.then(done, done);
+
+    if (ttl) {
+      request.then((response) => {
+        if (!response?.ok || !active) return;
+        storeInCache(key, ttl, response);
+      }, () => {});
     }
     return request;
   }
@@ -319,6 +365,8 @@ function installBeacon(env) {
 let imageObserver = null;
 let imageQueue = [];
 let imageFlushTimer = null;
+let imageFlushIdle = false;
+let imageVisibilityListener = null;
 
 function markAsyncDecode(img) {
   if (!img || img.tagName !== "IMG" || img.decoding === "async") return 0;
@@ -330,38 +378,76 @@ function markAsyncDecode(img) {
   }
 }
 
-function flushImageQueue() {
-  imageFlushTimer = null;
-  const batch = imageQueue.splice(0, IMAGE_BATCH);
-  for (const img of batch) markAsyncDecode(img);
-  if (imageQueue.length > 0) scheduleImageFlush();
+function documentView() {
+  try {
+    return document.defaultView ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function pageHidden() {
+  try {
+    return document.hidden === true;
+  } catch {
+    return false;
+  }
 }
 
 function scheduleImageFlush() {
   if (imageFlushTimer !== null) return;
-  imageFlushTimer = setTimeout(flushImageQueue, 150);
+  const view = documentView();
+  if (typeof view?.requestIdleCallback === "function") {
+    imageFlushIdle = true;
+    imageFlushTimer = view.requestIdleCallback(flushImageQueue, { timeout: 600 });
+  } else {
+    imageFlushIdle = false;
+    imageFlushTimer = setTimeout(flushImageQueue, 150);
+  }
+}
+
+function cancelImageFlush() {
+  if (imageFlushTimer === null) return;
+  const view = documentView();
+  if (imageFlushIdle && typeof view?.cancelIdleCallback === "function") view.cancelIdleCallback(imageFlushTimer);
+  else clearTimeout(imageFlushTimer);
+  imageFlushTimer = null;
+}
+
+function scanImages(root) {
+  let found;
+  try {
+    found = root.querySelectorAll("img[src]:not([decoding='async'])");
+  } catch {
+    return 0;
+  }
+  let marked = 0;
+  for (const img of found) marked += markAsyncDecode(img);
+  return marked;
+}
+
+function flushImageQueue() {
+  imageFlushTimer = null;
+  if (pageHidden()) {
+    scheduleImageFlush();
+    return;
+  }
+  const batch = imageQueue.splice(0, IMAGE_BATCH);
+  for (const root of batch) {
+    if (!root?.isConnected) continue;
+    markAsyncDecode(root);
+    scanImages(root);
+  }
+  if (imageQueue.length > 0) scheduleImageFlush();
 }
 
 function enqueueImages(root) {
   if (!root || root.nodeType !== 1) return 0;
-  let added = 0;
-  if (root.tagName === "IMG") {
-    imageQueue.push(root);
-    added += 1;
-  }
-  let list = [];
-  try {
-    list = root.querySelectorAll("img:not([decoding='async'])");
-  } catch {
-    list = [];
-  }
-  for (const img of list) {
-    imageQueue.push(img);
-    added += 1;
-  }
-  if (imageQueue.length > 6000) imageQueue.splice(0, imageQueue.length - 6000);
-  if (added > 0) scheduleImageFlush();
-  return added;
+  if (imageQueue.length >= IMAGE_QUEUE_LIMIT) return 0;
+  if (root.tagName !== "IMG" && root.childElementCount === 0) return 0;
+  imageQueue.push(root);
+  scheduleImageFlush();
+  return 1;
 }
 
 function installImageDecode() {
@@ -369,18 +455,19 @@ function installImageDecode() {
   const Obs = document.defaultView?.MutationObserver ?? MutationObserver;
   if (imageObserver || !Obs) return () => {};
   imageObserver = new Obs((records) => {
-    let queued = false;
+    let queued = 0;
     for (const record of records) {
       if (record.type === "attributes") {
-        if (enqueueImages(record.target) > 0) queued = true;
+        if (record.target?.tagName === "IMG") queued += enqueueImages(record.target);
         continue;
       }
-      for (const node of record.addedNodes) {
-        if (node?.nodeType !== 1) continue;
-        if (enqueueImages(node) > 0) queued = true;
+      const nodes = record.addedNodes;
+      for (let index = 0; index < nodes.length; index++) {
+        const node = nodes[index];
+        if (node?.nodeType === 1) queued += enqueueImages(node);
       }
+      if (queued > 400) break;
     }
-    if (queued) scheduleImageFlush();
   });
   try {
     imageObserver.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["src"] });
@@ -389,11 +476,16 @@ function installImageDecode() {
     return () => {};
   }
   enqueueImages(document.documentElement);
-  const sweep = setInterval(() => enqueueImages(document.documentElement), 30000);
+  imageVisibilityListener = () => {
+    if (pageHidden()) return;
+    enqueueImages(document.documentElement);
+    scheduleImageFlush();
+  };
+  document.addEventListener("visibilitychange", imageVisibilityListener);
   return () => {
-    clearInterval(sweep);
-    clearTimeout(imageFlushTimer);
-    imageFlushTimer = null;
+    document.removeEventListener("visibilitychange", imageVisibilityListener);
+    imageVisibilityListener = null;
+    cancelImageFlush();
     imageQueue = [];
     imageObserver?.disconnect();
     imageObserver = null;
@@ -433,16 +525,14 @@ function ungateNode(node) {
 
 function ungatePass() {
   if (!active || phase !== "InProgress") return 0;
-  let changed = 0;
-  for (const selector of UNGATE_SELECTORS) {
-    let nodes = [];
-    try {
-      nodes = document.querySelectorAll(selector);
-    } catch {
-      nodes = [];
-    }
-    for (const node of nodes) changed += ungateNode(node);
+  let nodes;
+  try {
+    nodes = document.querySelectorAll(UNGATE_SELECTOR);
+  } catch {
+    return 0;
   }
+  let changed = 0;
+  for (const node of nodes) changed += ungateNode(node);
   return changed;
 }
 
@@ -453,6 +543,10 @@ function ungateDelay() {
 function ungateTick() {
   ungateTimer = null;
   if (!active || phase !== "InProgress") return;
+  if (pageHidden()) {
+    ungateTimer = setTimeout(ungateTick, UNGATE_IDLE_MS);
+    return;
+  }
   const changed = ungatePass();
   ungateIdle = changed > 0 ? 0 : ungateIdle + 1;
   ungateTimer = setTimeout(ungateTick, ungateDelay());
@@ -483,12 +577,45 @@ function onPhase(next) {
 }
 
 async function refreshPhase() {
-  if (!active) return;
-  if (typeof document !== "undefined" && document.hidden) return;
+  if (!active || pageHidden()) return;
   try {
     const current = await api?.lcu?.get?.("/lol-gameflow/v1/gameflow-phase");
     if (current) onPhase(current);
   } catch {}
+}
+
+function startPhaseWatch() {
+  stopPhaseWatch();
+  if (unsubscribes.length === 0) {
+    phaseTimer = setInterval(() => {
+      if (!pageHidden()) refreshPhase();
+    }, PHASE_POLL_FALLBACK_MS);
+  }
+  phaseWatchListener = () => {
+    if (!pageHidden()) refreshPhase();
+  };
+  document.addEventListener("visibilitychange", phaseWatchListener);
+}
+
+function stopPhaseWatch() {
+  clearInterval(phaseTimer);
+  phaseTimer = null;
+  if (phaseWatchListener) {
+    document.removeEventListener("visibilitychange", phaseWatchListener);
+    phaseWatchListener = null;
+  }
+}
+
+function applyPerformanceMode() {
+  if (!api) return;
+  if (performanceMode) {
+    if (!removePerformanceStyle) removePerformanceStyle = api.addStyle(PERF_STYLE_ID, PERFORMANCE_CSS);
+    return;
+  }
+  if (removePerformanceStyle) {
+    removePerformanceStyle();
+    removePerformanceStyle = null;
+  }
 }
 
 function installNetwork(env) {
@@ -528,16 +655,15 @@ function onEnable(utils) {
       .then((value) => onPhase(value))
       .catch(() => {});
   } catch {}
-  refreshPhase();
-  clearInterval(phaseTimer);
-  phaseTimer = setInterval(refreshPhase, PHASE_POLL_MS);
+  startPhaseWatch();
+  performanceMode = api.getOption?.(PLUGIN_ID, "performanceMode") === true;
+  applyPerformanceMode();
   if (phase === "InProgress") startUngate();
 }
 
 function onDisable() {
   active = false;
-  clearInterval(phaseTimer);
-  phaseTimer = null;
+  stopPhaseWatch();
   stopUngate();
   for (const off of unsubscribes) {
     try {
@@ -551,10 +677,22 @@ function onDisable() {
     } catch {}
   }
   restores = [];
+  if (removePerformanceStyle) {
+    removePerformanceStyle();
+    removePerformanceStyle = null;
+  }
+  performanceMode = false;
   inflight.clear();
+  blockDecisions.clear();
   for (const key of [...cache.keys()]) evictOne(key);
   cacheBytes = 0;
   api = null;
+}
+
+function onOptionChange(key, value) {
+  if (key !== "performanceMode") return;
+  performanceMode = value === true;
+  applyPerformanceMode();
 }
 
 export function init() {
@@ -566,8 +704,10 @@ export function init() {
         "Debloats the client: blocks telemetry and analytics calls, merges duplicate requests, caches static client data, decodes images asynchronously and keeps settings, chat and friend requests usable during a game.",
       version,
       defaultEnabled: true,
+      options: OPTIONS,
       onEnable,
       onDisable,
+      onOptionChange,
     });
   };
 

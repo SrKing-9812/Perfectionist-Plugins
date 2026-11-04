@@ -6,8 +6,8 @@
 
 Built for [Pengu Loader](https://pengu.lol)
 
-![Pengu Loader](https://img.shields.io/badge/Pengu%20Loader-plugin%20suite-8A63D2?style=for-the-badge)
-![League of Legends](https://img.shields.io/badge/League%20of%20Legends-client-C89B3C?style=for-the-badge)
+![Pengu Loader](https://img.shields.io/badge/Pengu_Loader-plugin_suite-8A63D2?style=for-the-badge)
+![League of Legends](https://img.shields.io/badge/League_of_Legends-client-C89B3C?style=for-the-badge)
 ![Stars](https://img.shields.io/github/stars/SrKing-9812/Perfectionist-Plugins?style=for-the-badge&color=F5C542)
 
 </div>
@@ -37,7 +37,8 @@ Built for [Pengu Loader](https://pengu.lol)
     <td>
       In champ select, the skin carousel only shows the skins you own for the champion you picked.
       <br><br>
-      No more scrolling past skins you can't use.
+      The list is filtered where the client reads it, so the carousel, the arrows and the dots all move through owned
+      skins only, and the ones that are left keep their normal spacing.
     </td>
   </tr>
   <tr>
@@ -78,11 +79,16 @@ Built for [Pengu Loader](https://pengu.lol)
       duplicate requests are merged, and immutable payloads (game-data assets and rune definitions) are cached
       instead of re-downloaded and re-parsed every time a screen renders.
       <br><br>
-      Tiles are marked for asynchronous decode, so building bot lists, champion grids and the lobbies no longer stalls the UI, and the in-game un-gate pass backs off to one check every five seconds once it
-      has nothing left to unlock.
+      Everything it does on the page runs in idle slices instead of blocking navigation: image decode marking is
+      batched, the client phase comes from the client's own events rather than a timer, and the in-game un-gate pass
+      reads the page once with a single query and backs off to one check every five seconds once it has nothing left
+      to unlock.
       <br><br>
       It also keeps the social panel, friend requests and settings usable while a game is running, and repairs the
       champ-select data race after a client reload so the ban list is still populated.
+      <br><br>
+      For weaker machines there is one optional switch, <b>Performance mode</b>, which drops background blur,
+      decorative animation and looping background video. Leave it off and the client is pixel-identical.
       <br><br>
       For memory creep, <code>tools/betterclient-monitor.mjs</code> logs per-process RAM and client phase to CSV and
       diffs heap snapshots.

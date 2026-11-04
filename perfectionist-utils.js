@@ -26,7 +26,7 @@ const BUNDLED_MODULES = [
     id: "better-client",
     file: "better-client.js",
     name: "BetterClient",
-    version: "1.3.0",
+    version: "1.4.0",
     description: "Debloats the client: blocks telemetry, merges duplicate requests, caches immutable data, decodes images asynchronously and fixes several bugs.",
   },
   {
@@ -47,7 +47,7 @@ const BUNDLED_MODULES = [
     id: "hide-unowned-skins",
     file: "hide-unowned-skins.js",
     name: "Hide Unowned Skins",
-    version: "2.4.0",
+    version: "2.5.0",
     description: "In champion select, only shows the skins you own for the picked champion.",
   },
   {

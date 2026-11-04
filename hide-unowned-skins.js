@@ -1,4 +1,4 @@
-export const version = "2.4.0";
+export const version = "2.5.0";
 
 const PLUGIN_ID = "hide-unowned-skins";
 const STYLE_ID = "perfectionist-hide-unowned-skins-style";
@@ -18,7 +18,7 @@ const RETRY_MS = 5000;
 const STATE_KEY = "perfectionist-plugins:state";
 
 const CSS = `
-.${HIDDEN_CLASS} { display: none !important; margin: 0 !important; padding: 0 !important; border: none !important; }
+.${HIDDEN_CLASS} { display: none !important; margin: 0 !important; padding: 0 !important; border: none !important; pointer-events: none !important; }
 [data-perf-dots] { justify-content: center !important; }
 `;
 
@@ -162,13 +162,13 @@ function installFetchFilter() {
 
   const wrapped = function (input, init) {
     const url =
-    typeof input === "string"
-      ? input
-      : typeof input?.url === "string"
-        ? input.url
-        : typeof input?.href === "string"
-          ? input.href
-          : "";
+      typeof input === "string"
+        ? input
+        : typeof input?.url === "string"
+          ? input.url
+          : typeof input?.href === "string"
+            ? input.href
+            : "";
     const promise = original.call(this, input, init);
     if (!filterActive || url.split("?")[0].indexOf(CAROUSEL_URI) === -1) return promise;
     return promise.then((response) => {
@@ -224,8 +224,7 @@ function installXhrFilter() {
             const kept = filterSkinList(json);
             recordClientOrder(kept ?? json);
             if (kept) cache.filtered = JSON.stringify(kept);
-          } catch {
-          }
+          } catch {}
         }
         return cache.filtered;
       };
@@ -281,14 +280,15 @@ let selectInFlight = false;
 let sessionMisses = 0;
 let championMisses = 0;
 let renderObserver = null;
-const repackOriginals = new Map();
-const lastAppliedLeft = new Map();
-const skinSuffixCache = new Map();
 let repackTimer = null;
 let removeStyle = null;
 let lastSelectedDomIndex = -1;
 let navFixAt = 0;
 let lastSkipSignature = null;
+let itemSkinIds = new WeakMap();
+const repackOriginals = new Map();
+const lastAppliedLeft = new Map();
+const skinSuffixCache = new Map();
 const widthCache = new Map();
 
 function logError(scope, error) {
@@ -301,7 +301,8 @@ function skinSuffixOf(text) {
   return /Skins\/Base\//i.test(text) ? 0 : null;
 }
 
-function readSkinId(item) {
+function skinIdFromImages(item) {
+  if (currentChampionId === null) return null;
   for (const img of item.querySelectorAll("img[src]")) {
     const src = img.getAttribute("src");
     let suffix = skinSuffixCache.get(src);
@@ -313,6 +314,25 @@ function readSkinId(item) {
   }
   const suffix = skinSuffixOf(item.innerHTML);
   return suffix === null ? null : currentChampionId * 1000 + suffix;
+}
+
+function readSkinId(item) {
+  return itemSkinIds.get(item) ?? skinIdFromImages(item);
+}
+
+function effectiveOrder() {
+  return clientSkinOrder.length > 0 ? clientSkinOrder : carouselOrder;
+}
+
+function mapCarouselToItems(items) {
+  const order = effectiveOrder();
+  itemSkinIds = new WeakMap();
+  if (order.length === 0 || order.length !== items.length) return false;
+  items.forEach((item, index) => {
+    const id = order[index];
+    if (typeof id === "number") itemSkinIds.set(item, id);
+  });
+  return true;
 }
 
 function hideTargetFor(item) {
@@ -366,6 +386,40 @@ function guardSelection(items) {
   return true;
 }
 
+function leftToPx(item, raw) {
+  if (!raw) return 0;
+  if (raw.endsWith("px")) return parseFloat(raw);
+  if (raw.endsWith("%")) return (parseFloat(raw) / 100) * (item.parentElement?.offsetWidth || 468);
+  return 0;
+}
+
+function originalLeftOf(item) {
+  const original = repackOriginals.get(item);
+  return leftToPx(item, original ? original.value : item.style.getPropertyValue("left"));
+}
+
+function refreshOriginal(item) {
+  const current = item.style.getPropertyValue("left");
+  const priority = item.style.getPropertyPriority("left");
+  const last = lastAppliedLeft.get(item);
+  if (last !== undefined && current === last && priority === "important") return;
+  repackOriginals.set(item, { value: current, priority });
+  lastAppliedLeft.delete(item);
+}
+
+function widthOf(item, anchor) {
+  if (item.offsetWidth > 0) {
+    widthCache.set(item, item.offsetWidth);
+    return item.offsetWidth;
+  }
+  const measured = item.getBoundingClientRect().width;
+  if (measured > 0) {
+    widthCache.set(item, measured);
+    return measured;
+  }
+  return widthCache.get(item) ?? (item === anchor ? 117 : 73);
+}
+
 function repackVisibleItems(items) {
   pruneRepack();
   const visible = items.filter((item) => !item.classList.contains(HIDDEN_CLASS));
@@ -374,32 +428,15 @@ function repackVisibleItems(items) {
     return;
   }
 
-  const selectedIndex = items.findIndex((item) => item.classList.contains("skin-selection-item-selected"));
+  const selectedIndex = items.findIndex((item) => item.classList.contains(SELECTED_CLASS));
   let anchor = selectedIndex >= 0 ? items[selectedIndex] : null;
   if (!anchor && selectedSkinId !== null) {
     anchor = visible.find((item) => readSkinId(item) === selectedSkinId) ?? null;
   }
   if (!anchor) anchor = visible[Math.floor(visible.length / 2)];
   const anchorDomIndex = items.indexOf(anchor);
-
-  const widthOf = (item) => {
-    const measured = item.getBoundingClientRect().width;
-    if (measured > 0) {
-      widthCache.set(item, measured);
-      return measured;
-    }
-    return widthCache.get(item) ?? (item === anchor ? 117 : 73);
-  };
-  const toPx = (item) => {
-    const raw = item.style.left || "0";
-    if (raw.endsWith("px")) return parseFloat(raw);
-    const box = item.parentElement?.getBoundingClientRect().width || 468;
-    return (parseFloat(raw) / 100) * box;
-  };
-
-  const anchorLeft = toPx(anchor);
-  let rightX = anchorLeft + widthOf(anchor);
-  let leftX = anchorLeft;
+  refreshOriginal(anchor);
+  const anchorLeft = originalLeftOf(anchor);
 
   const setLeft = (item, x) => {
     const want = `${x}px`;
@@ -416,19 +453,23 @@ function repackVisibleItems(items) {
     lastAppliedLeft.set(item, want);
   };
 
-  items.forEach((item, index) => {
-    if (item === anchor || item.classList.contains(HIDDEN_CLASS)) return;
+  let rightX = anchorLeft + widthOf(anchor, anchor);
+  for (let index = anchorDomIndex + 1; index < items.length; index++) {
+    const item = items[index];
+    if (item.classList.contains(HIDDEN_CLASS)) continue;
+    const width = widthOf(item, anchor);
+    setLeft(item, rightX);
+    rightX += width;
+  }
 
-    const isRight = index > anchorDomIndex;
-    const w = widthOf(item);
-    if (isRight) {
-      setLeft(item, rightX);
-      rightX += w;
-    } else {
-      leftX -= w;
-      setLeft(item, leftX);
-    }
-  });
+  let leftX = anchorLeft;
+  for (let index = anchorDomIndex - 1; index >= 0; index--) {
+    const item = items[index];
+    if (item.classList.contains(HIDDEN_CLASS)) continue;
+    const width = widthOf(item, anchor);
+    leftX -= width;
+    setLeft(item, leftX);
+  }
 }
 
 function restoreRepack() {
@@ -446,6 +487,7 @@ function restoreRepack() {
 
 function applyAll() {
   const items = [...document.querySelectorAll(SKIN_ITEM_SELECTOR)];
+  mapCarouselToItems(items);
   let hidden = 0;
   items.forEach((item) => {
     const skinId = currentChampionId === null ? null : readSkinId(item);
@@ -457,9 +499,10 @@ function applyAll() {
 
   const dots = [...document.querySelectorAll(DOT_SELECTOR)];
   let dotsHidden = 0;
-  const dotsMapped = carouselOrder.length > 0 && dots.length === carouselOrder.length;
+  const dotOrder = effectiveOrder();
+  const dotsMapped = dotOrder.length > 0 && dots.length === dotOrder.length;
   dots.forEach((dot, index) => {
-    const skinId = dotsMapped ? carouselOrder[index] : undefined;
+    const skinId = dotsMapped ? dotOrder[index] : undefined;
     const hide = ownedSkinIds !== null && skinId !== undefined && allSkinIds !== null && allSkinIds.has(skinId) && !ownedSkinIds.has(skinId);
     if (hide) dotsHidden++;
     dot.classList.toggle(HIDDEN_CLASS, hide);
