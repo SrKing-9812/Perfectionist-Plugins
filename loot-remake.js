@@ -466,7 +466,7 @@ function jumpToRiotTab(label) {
 
 function open() {
   if (root || failed) return;
-  const backdropMode = window.PerfectionistLootBackdrop === "static" ? "static" : "video";
+  const backdropMode = window.PerfectionistLootBackdrop === "video" ? "video" : "static";
   try {
     const screenRoot = document.querySelector(".screen-root");
     if (!screenRoot) throw new Error("no screen root");
