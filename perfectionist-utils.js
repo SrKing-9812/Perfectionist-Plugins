@@ -6,7 +6,7 @@ const PANEL_ID = "perfectionist-plugins-panel";
 const STYLE_ID = "perfectionist-plugins-style";
 const TAB_TITLE = "Perfectionism";
 
-export const version = "2.0.0";
+export const version = "2.1.0";
 
 const PKG = "perfectionist-plugins";
 const CDN = "https://cdn.jsdelivr.net/npm";
@@ -28,6 +28,13 @@ const BUNDLED_MODULES = [
     name: "BetterClient",
     version: "1.4.0",
     description: "Debloats the client: blocks telemetry, merges duplicate requests, caches immutable data, decodes images asynchronously and fixes several bugs.",
+  },
+  {
+    id: "loot-remake",
+    file: "loot-remake.js",
+    name: "Loot Remake",
+    version: "0.1.0",
+    description: "Replaces the Loot screen with a plain-DOM view of the same inventory, skipping Ember's per-element build. Read-only preview.",
   },
   {
     id: "ban-blocker",
