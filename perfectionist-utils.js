@@ -40,7 +40,7 @@ const BUNDLED_MODULES = [
     id: "unlock-profile-skins",
     file: "unlock-profile-skins.js",
     name: "Unlock Profile Skins",
-    version: "1.2.2",
+    version: "1.2.3",
     description: "Unlocks every skin in the Set profile background window.",
   },
   {

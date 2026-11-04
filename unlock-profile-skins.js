@@ -1,4 +1,4 @@
-export const version = "1.2.2";
+export const version = "1.2.3";
 
 const PLUGIN_ID = "unlock-profile-skins";
 const PICKER_BUTTON_SELECTOR = ".style-profile-skin-picker-button";
@@ -581,19 +581,17 @@ function installXhrFilter() {
       const gateOpen = () => filterActive && (augment || isTargetUrl(url));
       const rewriteBody = (json) => (augment ? unlockAugmentInventory(json) : unlockDeep(json));
       const filteredText = () => {
-        const raw = textDescriptor.get.call(xhr);
         const gate = gateOpen();
-        if (cache.filtered === null || cache.raw !== raw || cache.gate !== gate) {
-          cache.raw = raw;
-          cache.gate = gate;
-          cache.filtered = raw;
-          if (gate) {
-            try {
-              const json = JSON.parse(raw);
-              const rewritten = rewriteBody(json) ? JSON.stringify(json) : null;
-              if (rewritten !== null) cache.filtered = rewritten;
-            } catch {}
-          }
+        if (cache.filtered !== null && cache.gate === gate) return cache.filtered;
+        const raw = textDescriptor.get.call(xhr);
+        cache.gate = gate;
+        cache.filtered = raw;
+        if (gate) {
+          try {
+            const json = JSON.parse(raw);
+            const rewritten = rewriteBody(json) ? JSON.stringify(json) : null;
+            if (rewritten !== null) cache.filtered = rewritten;
+          } catch {}
         }
         return cache.filtered;
       };
