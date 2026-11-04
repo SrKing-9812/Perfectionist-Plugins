@@ -1,4 +1,4 @@
-export const version = "1.2.1";
+export const version = "1.2.2";
 
 const PLUGIN_ID = "unlock-profile-skins";
 const PICKER_BUTTON_SELECTOR = ".style-profile-skin-picker-button";
@@ -6,6 +6,7 @@ const CURRENT_SUMMONER_URI = "/lol-summoner/v1/current-summoner";
 const INVENTORY_PATH = /^\/lol-champions\/v1\/inventories\/(\d+)\/champions$/;
 const AUGMENT_INVENTORY_PATH = /^\/lol-inventory\/v2\/inventory\/SKIN_AUGMENT$/i;
 const SUMMONER_TTL = 10 * 60 * 1000;
+const SUMMONER_WAIT_MS = 1200;
 const STATE_KEY = "perfectionist-plugins:state";
 const FAKE_PURCHASE_DATE = 1577836800000;
 const FAKE_RENTAL_END = 4102444800000;
@@ -196,17 +197,24 @@ function unlockDeep(node) {
       }
     }
   }
-  if (node.ownership && typeof node.ownership === "object") {
-    changed = unlockOwnership(node.ownership) || changed;
-  } else if (typeof node.contentId === "string" && Array.isArray(node.overlays)) {
-    node.ownership = synthesizedOwnership();
-    changed = true;
+  const championNode = Array.isArray(node.skins);
+  if (!championNode) {
+    if (node.ownership && typeof node.ownership === "object") {
+      changed = unlockOwnership(node.ownership) || changed;
+    } else if (typeof node.contentId === "string" && Array.isArray(node.overlays)) {
+      node.ownership = synthesizedOwnership();
+      changed = true;
+    }
+    if (node.owned === false) {
+      node.owned = true;
+      changed = true;
+    }
   }
-  if (node.owned === false) {
-    node.owned = true;
-    changed = true;
-  }
-  const values = Array.isArray(node) ? node : Object.values(node);
+  const values = Array.isArray(node)
+    ? node
+    : Object.keys(node)
+        .filter((key) => key !== "ownership")
+        .map((key) => node[key]);
   for (const value of values) {
     if (value && typeof value === "object") changed = unlockDeep(value) || changed;
   }
@@ -334,12 +342,34 @@ function maybeRefreshSummoner() {
   ensureSummonerId();
 }
 
+function whenSummonerKnown(timeout) {
+  if (summonerId !== null) return Promise.resolve(true);
+  ensureSummonerId();
+  const deadline = Date.now() + timeout;
+  return new Promise((resolve) => {
+    const step = () => {
+      if (summonerId !== null) return resolve(true);
+      if (Date.now() >= deadline) return resolve(false);
+      setTimeout(step, 40);
+    };
+    setTimeout(step, 0);
+  });
+}
+
 function ensureSummonerId() {
   if (summonerId !== null || summonerPending) return;
-  const get = api?.lcu?.get;
-  if (!get) return;
   summonerPending = true;
-  get(CURRENT_SUMMONER_URI, { ttl: SUMMONER_TTL })
+  let request;
+  try {
+    const get = api?.lcu?.get;
+    request = get
+      ? get(CURRENT_SUMMONER_URI, { ttl: SUMMONER_TTL })
+      : (rawFetch || window.fetch)(CURRENT_SUMMONER_URI).then((response) => response.json());
+  } catch {
+    summonerPending = false;
+    return;
+  }
+  Promise.resolve(request)
     .then((summoner) => {
       summonerId = typeof summoner?.summonerId === "number" ? summoner.summonerId : null;
     })
@@ -348,13 +378,11 @@ function ensureSummonerId() {
       summonerPending = false;
     });
 }
-
 function rewriteWebSocketFrame(text) {
   if (!filterActive || typeof text !== "string") return null;
   const targetFrame = text.indexOf("lol-champions/v1/inventories") !== -1;
   const augmentFrame = text.indexOf("SKIN_AUGMENT") !== -1;
   if (!targetFrame && !augmentFrame) return null;
-  if (!isPickerOpen()) return null;
   let frame;
   try {
     frame = JSON.parse(text);
@@ -454,53 +482,58 @@ function installFetchFilter() {
 
   const wrapped = function (input, init) {
     const url = typeof input === "string" ? input : (input && input.url) || "";
-    const target = isTargetUrl(url);
-    const augment = !target && isAugmentUrl(url);
-    if (filterActive && pathIdOf(url) !== null) maybeRefreshSummoner();
-    if (filterActive && init && typeof init.body === "string") {
-      const mapped = remapVariantIds(init.body);
-      if (mapped !== init.body) init = { ...init, body: mapped };
+    const inventory = pathIdOf(url) !== null;
+    const augmentRequest = isAugmentUrl(url);
+    let options = init;
+    if (filterActive && options && typeof options.body === "string") {
+      const mapped = remapVariantIds(options.body);
+      if (mapped !== options.body) options = { ...options, body: mapped };
     }
-    const promise = original.call(this, input, init);
-    if (filterActive && target && augmentIds.size === 0) {
-      const latch = (async () => {
-        try {
-          const response = await promise;
-          if (response && response.ok && augmentIds.size === 0) {
-            const json = await response.clone().json().catch(() => null);
-            if (json) harvestFromPayload(json);
-          }
-        } catch {}
-        pendingTargetLoads.delete(latch);
-      })();
-      pendingTargetLoads.add(latch);
-    }
-    if (!filterActive || (!target && !augment) || !isPickerOpen()) return promise;
-    const ready = augment && augmentIds.size === 0 ? ensureAugmentIds() : Promise.resolve();
-    return ready
-      .then(() => promise)
-      .then((response) => {
-        if (!response || !response.ok) return response;
-        return response
-          .clone()
-          .json()
-          .catch(() => null)
-          .then((json) => {
-            if (!json) return response;
-            const changed = augment ? unlockAugmentInventory(json) : unlockDeep(json);
-            if (!changed) return response;
-            return new Response(JSON.stringify(json), {
-              status: response.status,
-              statusText: response.statusText,
-              headers: response.headers,
+    const promise = original.call(this, input, options);
+    if (!filterActive || (!inventory && !augmentRequest)) return promise;
+    if (inventory) maybeRefreshSummoner();
+
+    return whenSummonerKnown(SUMMONER_WAIT_MS).then(() => {
+      const target = isTargetUrl(url);
+      if (!target && !augmentRequest) return promise;
+      if (target && augmentIds.size === 0) {
+        const latch = (async () => {
+          try {
+            const response = await promise;
+            if (response && response.ok && augmentIds.size === 0) {
+              const json = await response.clone().json().catch(() => null);
+              if (json) harvestFromPayload(json);
+            }
+          } catch {}
+          pendingTargetLoads.delete(latch);
+        })();
+        pendingTargetLoads.add(latch);
+      }
+      const ready = augmentRequest && augmentIds.size === 0 ? ensureAugmentIds() : Promise.resolve();
+      return ready
+        .then(() => promise)
+        .then((response) => {
+          if (!response || !response.ok) return response;
+          return response
+            .clone()
+            .json()
+            .catch(() => null)
+            .then((json) => {
+              if (!json) return response;
+              const changed = augmentRequest ? unlockAugmentInventory(json) : unlockDeep(json);
+              if (!changed) return response;
+              return new Response(JSON.stringify(json), {
+                status: response.status,
+                statusText: response.statusText,
+                headers: response.headers,
+              });
             });
-          });
-      });
+        });
+    });
   };
   wrapped.__perfProfileFilter = true;
   window.fetch = wrapped;
 }
-
 function installXhrFilter() {
   const proto = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
   if (!proto || proto.open.__perfProfileFilter) return;
@@ -543,9 +576,9 @@ function installXhrFilter() {
       });
       pendingTargetLoads.add(latch);
     }
-    if (textDescriptor && textDescriptor.get && (target || augment)) {
+    if (textDescriptor && textDescriptor.get && (pathIdOf(url) !== null || augment)) {
       const cache = { raw: null, gate: null, filtered: null };
-      const gateOpen = () => filterActive && isPickerOpen();
+      const gateOpen = () => filterActive && (augment || isTargetUrl(url));
       const rewriteBody = (json) => (augment ? unlockAugmentInventory(json) : unlockDeep(json));
       const filteredText = () => {
         const raw = textDescriptor.get.call(xhr);
@@ -578,7 +611,7 @@ function installXhrFilter() {
         });
       }
     }
-    if (augment && filterActive && isPickerOpen() && augmentIds.size === 0) {
+    if (augment && filterActive && augmentIds.size === 0) {
       const sendArgs = args;
       ensureAugmentIds().finally(() => {
         try {
@@ -597,6 +630,7 @@ function installSourceFilter() {
     installWebSocketFilter();
     installFetchFilter();
     installXhrFilter();
+    ensureSummonerId();
   } catch (error) {
     logError("could not install the source filter.", error);
   }

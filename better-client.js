@@ -1,5 +1,5 @@
 const PLUGIN_ID = "better-client";
-const version = "1.2.0";
+const version = "1.3.0";
 
 const MAX_CACHE_ENTRIES = 24;
 const MAX_CACHE_ENTRY_BYTES = 2 * 1024 * 1024;
@@ -14,6 +14,9 @@ const TELEMETRY_HOST = /(^|\.)(telemetry|analytics|metrics|sentry|bugsnag|crash-
 const TELEMETRY_PATH = /(^|\/)(lol-telemetry|lol-analytics|lol-metrics|lol-rms|rms|lol-sentry|lol-crash|telemetry|analytics|metrics|sentry|bugsnag|crash-?report\w*|tracking|beacon)(\/|$)/i;
 const ASSET_PATH = /^\/lol-game-data\/assets\//i;
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+
+const CHAMP_SELECT_DATA = /^\/lol-champ-select\/v1\/(session|all-grid-champions|pickable-champion-ids|bannable-champion-ids)$/i;
+const CHAMP_SELECT_RETRY_MS = [120, 260, 520];
 
 const STATIC_ENDPOINTS = [
   ["/lol-game-data/assets/", 60 * 60 * 1000],
@@ -140,8 +143,56 @@ function clearVolatileCache() {
   }
 }
 
+function champSelectDataPath(url) {
+  if (!url) return null;
+  return CHAMP_SELECT_DATA.test(url.pathname) ? url.pathname.toLowerCase() : null;
+}
+
+function isEmptyChampSelect(path, json) {
+  if (path.endsWith("/session")) {
+    if (!json || typeof json !== "object") return true;
+    return !Array.isArray(json.myTeam) || json.myTeam.length === 0;
+  }
+  return Array.isArray(json) && json.length === 0;
+}
+
+function champSelectPathOf(rawUrl) {
+  return champSelectDataPath(resolveUrl(rawUrl));
+}
+
+async function primeChampSelect(raw, path) {
+  for (const wait of [0, 120, 240]) {
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    try {
+      const response = await raw(path);
+      if (!response?.ok) continue;
+      const json = await response.json();
+      if (!isEmptyChampSelect(path, json)) return;
+    } catch {}
+  }
+}
+
 function createFetch(env) {
   const native = env.fetch.bind(env);
+
+  function repairChampSelect(input, init, request, path) {
+    let attempt = 0;
+    const step = (current) =>
+      current.then((response) => {
+        if (!active || phase !== "ChampSelect" || attempt >= CHAMP_SELECT_RETRY_MS.length) return response;
+        if (!response || !response.ok || !response.clone) return response;
+        return response.clone().json().then(
+          (json) => {
+            if (!isEmptyChampSelect(path, json)) return response;
+            const wait = CHAMP_SELECT_RETRY_MS[attempt];
+            attempt += 1;
+            return new Promise((resolve) => setTimeout(resolve, wait)).then(() => step(native(input, init)));
+          },
+          () => response,
+        );
+      });
+    return step(request);
+  }
 
   function betterFetch(input, init) {
     const raw = urlOf(input);
@@ -171,7 +222,11 @@ function createFetch(env) {
       }
     }
 
-    const request = native(input, init);
+    let request = native(input, init);
+    const dataPath = champSelectDataPath(url);
+    if (dataPath && active && phase === "ChampSelect") {
+      request = repairChampSelect(input, init, request, dataPath);
+    }
     if (local && (method === "GET" || method === "HEAD")) {
       inflight.set(key, request);
       const done = () => inflight.delete(key);
@@ -188,6 +243,7 @@ function createFetch(env) {
   }
 
   betterFetch.__better = true;
+  betterFetch.raw = native;
   return betterFetch;
 }
 
@@ -222,6 +278,17 @@ function installXhr(env) {
   proto.send = function (body) {
     if (active && shouldBlockUrl(this.__betterUrl)) {
       emitBlockedXhr(this, env);
+      return undefined;
+    }
+    const path = champSelectPathOf(this.__betterUrl);
+    const raw = env.fetch?.raw;
+    if (path && raw && active && phase === "ChampSelect" && !this.__betterPrimed) {
+      this.__betterPrimed = true;
+      primeChampSelect(raw, path).finally(() => {
+        try {
+          nativeSend.call(this, body);
+        } catch {}
+      });
       return undefined;
     }
     return nativeSend.call(this, body);

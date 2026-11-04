@@ -26,7 +26,7 @@ const BUNDLED_MODULES = [
     id: "better-client",
     file: "better-client.js",
     name: "BetterClient",
-    version: "1.2.0",
+    version: "1.3.0",
     description: "Debloats the client: blocks telemetry, merges duplicate requests, caches immutable data, decodes images asynchronously and fixes several bugs.",
   },
   {
@@ -40,7 +40,7 @@ const BUNDLED_MODULES = [
     id: "unlock-profile-skins",
     file: "unlock-profile-skins.js",
     name: "Unlock Profile Skins",
-    version: "1.2.1",
+    version: "1.2.2",
     description: "Unlocks every skin in the Set profile background window.",
   },
   {

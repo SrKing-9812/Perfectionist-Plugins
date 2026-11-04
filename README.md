@@ -80,6 +80,12 @@ Built for [Pengu Loader](https://pengu.lol)
       <br><br>
       Tiles are marked for asynchronous decode, so building bot lists, champion grids and the lobbies no longer stalls the UI, and the in-game un-gate pass backs off to one check every five seconds once it
       has nothing left to unlock.
+      <br><br>
+      It also keeps the social panel, friend requests and settings usable while a game is running, and repairs the
+      champ-select data race after a client reload so the ban list is still populated.
+      <br><br>
+      For memory creep, <code>tools/betterclient-monitor.mjs</code> logs per-process RAM and client phase to CSV and
+      diffs heap snapshots.
     </td>
   </tr>
 </table>
