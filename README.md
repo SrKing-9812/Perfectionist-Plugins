@@ -89,9 +89,6 @@ Built for [Pengu Loader](https://pengu.lol)
       <br><br>
       For weaker machines there is one optional switch, <b>Performance mode</b>, which drops background blur,
       decorative animation and looping background video. Leave it off and the client is pixel-identical.
-      <br><br>
-      For memory creep, <code>tools/betterclient-monitor.mjs</code> logs per-process RAM and client phase to CSV and
-      diffs heap snapshots.
     </td>
   </tr>
 </table>
