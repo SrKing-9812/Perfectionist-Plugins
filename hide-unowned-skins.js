@@ -22,15 +22,11 @@ const CSS = `
 [data-perf-dots] { justify-content: center !important; }
 `;
 
-const CHAMP_SELECT_OBSERVER_OPTIONS = {
+const OBSERVER_OPTIONS = {
   childList: true,
   subtree: true,
   attributes: true,
   attributeFilter: ["class", "style", "src"],
-};
-const PASSIVE_OBSERVER_OPTIONS = {
-  childList: true,
-  subtree: true,
 };
 
 let filterActive = true;
@@ -284,7 +280,7 @@ let selectInFlight = false;
 let sessionMisses = 0;
 let championMisses = 0;
 let renderObserver = null;
-let skinMode = false;
+let sessionActive = false;
 let repackTimer = null;
 let removeStyle = null;
 let lastSelectedDomIndex = -1;
@@ -529,17 +525,25 @@ function scheduleRepack() {
   repackTimer = setTimeout(runRepack, REPACK_SETTLE_MS);
 }
 
-function observeRender() {
-  if (!renderObserver) return;
-  renderObserver.disconnect();
-  renderObserver.observe(
-    document.documentElement ?? document,
-    skinMode ? CHAMP_SELECT_OBSERVER_OPTIONS : PASSIVE_OBSERVER_OPTIONS,
-  );
+function startRenderObserver() {
+  if (!sessionActive || renderObserver || !api) return;
+  renderObserver = new MutationObserver(() => {
+    ensureSourceFilter();
+    const item = document.querySelector(SKIN_ITEM_SELECTOR);
+    if (!item && !document.querySelector(DOT_SELECTOR)) return;
+    applyAllGuarded();
+    if (item) scheduleRefresh();
+  });
+  try {
+    renderObserver.observe(document.documentElement ?? document, OBSERVER_OPTIONS);
+  } catch {
+    renderObserver = null;
+  }
 }
 
-function skinUiPresent() {
-  return Boolean(document.querySelector(SKIN_ITEM_SELECTOR) || document.querySelector(DOT_SELECTOR));
+function stopRenderObserver() {
+  renderObserver?.disconnect();
+  renderObserver = null;
 }
 
 function runRepack() {
@@ -551,7 +555,7 @@ function runRepack() {
     if (ownedSkinIds !== null && hidden) repackVisibleItems(items);
     else restoreRepack();
   } finally {
-    observeRender();
+    startRenderObserver();
   }
 }
 
@@ -560,7 +564,7 @@ function applyAllGuarded() {
   try {
     applyAll();
   } finally {
-    observeRender();
+    startRenderObserver();
   }
 }
 
@@ -717,11 +721,15 @@ function scheduleRefresh() {
 function onSessionPush(raw) {
   const msg = raw ?? {};
   if (msg.eventType === "Delete") {
+    sessionActive = false;
+    stopRenderObserver();
     resetState();
     return;
   }
   const s = msg.data ?? msg;
   if (!s?.myTeam) return;
+  sessionActive = true;
+  startRenderObserver();
   updateForSession(s, null);
 }
 
@@ -732,11 +740,17 @@ async function pollSession() {
   try {
     const session = await api.lcu.get(SESSION_URI);
     sessionMisses = 0;
+    sessionActive = true;
+    startRenderObserver();
     const selection = await api.lcu.get(SELECTION_URI).catch(() => null);
     updateForSession(session, selection);
   } catch {
     sessionMisses++;
-    if (sessionMisses >= 3) resetState();
+    if (sessionMisses >= 3) {
+      sessionActive = false;
+      stopRenderObserver();
+      resetState();
+    }
   } finally {
     pollInFlight = false;
   }
@@ -745,27 +759,8 @@ async function pollSession() {
 function onEnable(utils) {
   api = utils;
   filterActive = true;
+  sessionActive = false;
   removeStyle = api.addStyle(STYLE_ID, CSS);
-
-  renderObserver = new MutationObserver(() => {
-    const present = skinUiPresent();
-    if (!present) {
-      if (skinMode) {
-        skinMode = false;
-        observeRender();
-      }
-      return;
-    }
-    if (!skinMode) {
-      skinMode = true;
-      observeRender();
-    }
-    ensureSourceFilter();
-    applyAllGuarded();
-    scheduleRefresh();
-  });
-  skinMode = false;
-  observeRender();
 
   window.addEventListener("resize", onWindowResize);
   unsubscribe = api.subscribe(SESSION_URI, onSessionPush);
@@ -780,12 +775,11 @@ function onDisable() {
   refreshTimer = null;
   clearTimeout(repackTimer);
   repackTimer = null;
-  renderObserver?.disconnect();
+  sessionActive = false;
+  stopRenderObserver();
   removeStyle?.();
-  renderObserver = null;
   removeStyle = null;
   filterActive = false;
-  skinMode = false;
 
   resetState();
   document.querySelectorAll(`.${HIDDEN_CLASS}`).forEach((item) => item.classList.remove(HIDDEN_CLASS));

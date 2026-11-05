@@ -1,4 +1,4 @@
-export const version = "1.2.3";
+export const version = "1.2.4";
 
 const PLUGIN_ID = "unlock-profile-skins";
 const PICKER_BUTTON_SELECTOR = ".style-profile-skin-picker-button";
@@ -13,6 +13,7 @@ const FAKE_RENTAL_END = 4102444800000;
 const TIER_LABEL = "tier";
 const GROUPING_OPTIONS = "lol-uikit-dropdown-option";
 const HARVEST_WAIT_MS = 2000;
+const INVENTORY_TEXT_CACHE_LIMIT = 2;
 
 let filterActive = true;
 let api = null;
@@ -23,6 +24,7 @@ let harvestPromise = null;
 const augmentIds = new Set();
 const pendingTargetLoads = new Set();
 const variantIdRemap = new Map();
+const inventoryTextCache = new Map();
 
 function readDefaultEnabled() {
   try {
@@ -287,6 +289,7 @@ function ensureAugmentIds() {
 let tierObserver = null;
 let tierAppliedForOpen = false;
 let tierDropdown = null;
+let tierArmListener = null;
 
 function findGroupingDropdown() {
   for (const dd of document.querySelectorAll("lol-uikit-framed-dropdown")) {
@@ -320,6 +323,10 @@ function applyTierGrouping() {
 function startTierGrouping() {
   if (tierObserver) return;
   tierObserver = new MutationObserver(() => {
+    if (!isPickerOpen()) {
+      stopTierGrouping();
+      return;
+    }
     try {
       applyTierGrouping();
     } catch (error) {
@@ -378,6 +385,26 @@ function ensureSummonerId() {
       summonerPending = false;
     });
 }
+function rewriteInventoryText(raw) {
+  if (typeof raw !== "string") return raw;
+  if (inventoryTextCache.has(raw)) {
+    const cached = inventoryTextCache.get(raw);
+    inventoryTextCache.delete(raw);
+    inventoryTextCache.set(raw, cached);
+    return cached;
+  }
+  let rewritten = raw;
+  try {
+    const json = JSON.parse(raw);
+    if (unlockDeep(json)) rewritten = JSON.stringify(json);
+  } catch {}
+  inventoryTextCache.set(raw, rewritten);
+  while (inventoryTextCache.size > INVENTORY_TEXT_CACHE_LIMIT) {
+    inventoryTextCache.delete(inventoryTextCache.keys().next().value);
+  }
+  return rewritten;
+}
+
 function rewriteWebSocketFrame(text) {
   if (!filterActive || typeof text !== "string") return null;
   const targetFrame = text.indexOf("lol-champions/v1/inventories") !== -1;
@@ -495,7 +522,7 @@ function installFetchFilter() {
 
     return whenSummonerKnown(SUMMONER_WAIT_MS).then(() => {
       const target = isTargetUrl(url);
-      if (!target && !augmentRequest) return promise;
+      if (!augmentRequest && !target) return promise;
       if (target && augmentIds.size === 0) {
         const latch = (async () => {
           try {
@@ -514,15 +541,29 @@ function installFetchFilter() {
         .then(() => promise)
         .then((response) => {
           if (!response || !response.ok) return response;
+          if (augmentRequest) {
+            return response
+              .clone()
+              .json()
+              .catch(() => null)
+              .then((json) => {
+                if (!json || !unlockAugmentInventory(json)) return response;
+                return new Response(JSON.stringify(json), {
+                  status: response.status,
+                  statusText: response.statusText,
+                  headers: response.headers,
+                });
+              });
+          }
           return response
             .clone()
-            .json()
+            .text()
             .catch(() => null)
-            .then((json) => {
-              if (!json) return response;
-              const changed = augmentRequest ? unlockAugmentInventory(json) : unlockDeep(json);
-              if (!changed) return response;
-              return new Response(JSON.stringify(json), {
+            .then((text) => {
+              if (text === null) return response;
+              const rewritten = rewriteInventoryText(text);
+              if (rewritten === text) return response;
+              return new Response(rewritten, {
                 status: response.status,
                 statusText: response.statusText,
                 headers: response.headers,
@@ -587,11 +628,14 @@ function installXhrFilter() {
         cache.gate = gate;
         cache.filtered = raw;
         if (gate) {
-          try {
-            const json = JSON.parse(raw);
-            const rewritten = rewriteBody(json) ? JSON.stringify(json) : null;
-            if (rewritten !== null) cache.filtered = rewritten;
-          } catch {}
+          if (augment) {
+            try {
+              const json = JSON.parse(raw);
+              if (rewriteBody(json)) cache.filtered = JSON.stringify(json);
+            } catch {}
+          } else {
+            cache.filtered = rewriteInventoryText(raw);
+          }
         }
         return cache.filtered;
       };
@@ -649,11 +693,21 @@ function onEnable(utils) {
   filterActive = true;
   ensureSourceFilter();
   ensureSummonerId();
-  startTierGrouping();
+  tierArmListener = () => {
+    if (tierObserver) return;
+    setTimeout(() => {
+      if (tierArmListener && isPickerOpen()) startTierGrouping();
+    }, 0);
+  };
+  document.addEventListener("click", tierArmListener, true);
+  if (isPickerOpen()) startTierGrouping();
 }
 
 function onDisable() {
   filterActive = false;
+  inventoryTextCache.clear();
+  if (tierArmListener) document.removeEventListener("click", tierArmListener, true);
+  tierArmListener = null;
   stopTierGrouping();
   api = null;
 }

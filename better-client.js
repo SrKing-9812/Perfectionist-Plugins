@@ -836,7 +836,7 @@ function installImageDecode() {
     }
   });
   try {
-    imageObserver.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["src"] });
+    imageObserver.observe(document.documentElement, { childList: true, subtree: true });
   } catch {
     imageObserver = null;
     return () => {};
