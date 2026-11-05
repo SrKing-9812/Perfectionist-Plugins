@@ -230,6 +230,7 @@ let root = null;
 let hiddenApp = null;
 let observer = null;
 let unsubscribe = null;
+let actionBusy = false;
 let refreshTimer = null;
 let searchTimer = null;
 let selectedId = null;
@@ -507,9 +508,9 @@ async function loadActions(lootId) {
   }
 }
 
-async function refresh() {
+async function refresh(force = false) {
   if (!root || !api) return;
-  const loot = await api.lcu.get(LOOT_URI, { ttl: 2000 });
+  const loot = await api.lcu.get(LOOT_URI, { ttl: force ? 0 : 2000 });
   if (!Array.isArray(loot)) throw new Error("unexpected loot payload");
   items = loot.filter((item) => item.type !== "CURRENCY" && item.type !== "MATERIAL");
   currencies = deriveCurrencies(loot);
@@ -666,7 +667,7 @@ function confirmAction(action) {
   modal.innerHTML = `
     <div class="pl-modal-box">
       <div class="pl-modal-title">${esc(actionLabel(action))} ${esc(nameOf(item))}</div>
-      <div class="pl-modal-body">${esc(metaOf(item))}.${esc(cost)} The original Loot page opens to finish this.</div>
+      <div class="pl-modal-body">${esc(metaOf(item))}.${esc(cost)} This cannot be undone.</div>
       <div class="pl-modal-buttons">
         <button type="button" class="pl-action" data-modal="cancel">Cancel</button>
         <button type="button" class="pl-action" data-modal="confirm">${esc(actionLabel(action))}</button>
@@ -684,12 +685,25 @@ function toast(message) {
   setTimeout(() => el.remove(), 2800);
 }
 
-function runAction() {
+async function runAction() {
+  const action = pendingAction;
+  const lootId = selectedId;
   pendingAction = null;
   root?.querySelector(".pl-modal")?.remove();
-  toast("Opening the original Loot page to finish this.");
-  mountRiotLoot();
-  jumpToRiotTab("CRAFTING");
+  if (!action || !lootId || actionBusy || !api?.lcu?.send) return;
+  actionBusy = true;
+  try {
+    await api.lcu.send("POST", `/lol-loot/v1/recipes/${encodeURIComponent(action.name)}/craft`, [lootId]);
+    selectedId = null;
+    toast(`${actionLabel(action)} complete.`);
+    await refresh(true);
+    setTimeout(() => refresh(true).catch(() => {}), 900);
+  } catch (error) {
+    toast(`${actionLabel(action)} failed: Riot rejected the request.`);
+    await refresh(true).catch(() => {});
+  } finally {
+    actionBusy = false;
+  }
 }
 
 function onInput(event) {
@@ -742,7 +756,7 @@ function onClick(event) {
   }
   const modalButton = target.closest("[data-modal]");
   if (modalButton) {
-    if (modalButton.dataset.modal === "confirm") runAction();
+    if (modalButton.dataset.modal === "confirm") runAction().catch(() => {});
     else {
       pendingAction = null;
       root.querySelector(".pl-modal")?.remove();
@@ -867,7 +881,6 @@ const EVENT_TYPES = ["mousedown", "mouseup", "click", "pointerdown", "pointerup"
 function attachListeners() {
   for (const type of EVENT_TYPES) window.addEventListener(type, onNavClick, true);
   window.addEventListener("click", onClick, true);
-  window.addEventListener("pointerup", onClick, true);
   window.addEventListener("mouseover", onHover, true);
   window.addEventListener("mouseout", onHover, true);
   window.addEventListener("input", onInput, true);
@@ -878,7 +891,6 @@ function attachListeners() {
 function detachListeners() {
   for (const type of EVENT_TYPES) window.removeEventListener(type, onNavClick, true);
   window.removeEventListener("click", onClick, true);
-  window.removeEventListener("pointerup", onClick, true);
   window.removeEventListener("mouseover", onHover, true);
   window.removeEventListener("mouseout", onHover, true);
   window.removeEventListener("input", onInput, true);
