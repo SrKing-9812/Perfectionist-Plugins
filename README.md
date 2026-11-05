@@ -89,6 +89,10 @@ Built for [Pengu Loader](https://pengu.lol)
       <br><br>
       For weaker machines there is one optional switch, <b>Performance mode</b>, which drops background blur,
       decorative animation and looping background video. Leave it off and the client is pixel-identical.
+      <br><br>
+      <b>Diagnostics</b> is a separate opt-in switch, off by default. It keeps an in-memory tally of long tasks,
+      screen settle times, requests and heap samples and has a <b>Copy report</b> button. Nothing is sent over the
+      network and the report contains no account, summoner, token or LCU data.
     </td>
   </tr>
 </table>
@@ -117,6 +121,14 @@ Every time the client starts, the loader checks npm for a newer version and runs
 a new version of the npm package **is** the update. If a new version appears while the client is
 already open, the suite downloads it with a progress window and restarts the client at a safe
 moment (never in the middle of a game). You never replace files by hand.
+
+### Diagnostics (optional)
+
+Open **Settings → Perfectionism → BetterClient**, enable **Diagnostics**, use the
+client normally, then press **Copy report**. It records long tasks, screen settle
+times, request counts and heap samples in memory only. It is off by default and
+sends nothing over the network; the report has no account, summoner, token or LCU
+data.
 
 <br>
 

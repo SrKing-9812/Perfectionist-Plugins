@@ -1,4 +1,4 @@
-export const version = "2.5.0";
+export const version = "2.5.1";
 
 const PLUGIN_ID = "hide-unowned-skins";
 const STYLE_ID = "perfectionist-hide-unowned-skins-style";
@@ -22,11 +22,15 @@ const CSS = `
 [data-perf-dots] { justify-content: center !important; }
 `;
 
-const OBSERVER_OPTIONS = {
+const CHAMP_SELECT_OBSERVER_OPTIONS = {
   childList: true,
   subtree: true,
   attributes: true,
   attributeFilter: ["class", "style", "src"],
+};
+const PASSIVE_OBSERVER_OPTIONS = {
+  childList: true,
+  subtree: true,
 };
 
 let filterActive = true;
@@ -280,6 +284,7 @@ let selectInFlight = false;
 let sessionMisses = 0;
 let championMisses = 0;
 let renderObserver = null;
+let skinMode = false;
 let repackTimer = null;
 let removeStyle = null;
 let lastSelectedDomIndex = -1;
@@ -524,6 +529,19 @@ function scheduleRepack() {
   repackTimer = setTimeout(runRepack, REPACK_SETTLE_MS);
 }
 
+function observeRender() {
+  if (!renderObserver) return;
+  renderObserver.disconnect();
+  renderObserver.observe(
+    document.documentElement ?? document,
+    skinMode ? CHAMP_SELECT_OBSERVER_OPTIONS : PASSIVE_OBSERVER_OPTIONS,
+  );
+}
+
+function skinUiPresent() {
+  return Boolean(document.querySelector(SKIN_ITEM_SELECTOR) || document.querySelector(DOT_SELECTOR));
+}
+
 function runRepack() {
   repackTimer = null;
   renderObserver?.disconnect();
@@ -533,7 +551,7 @@ function runRepack() {
     if (ownedSkinIds !== null && hidden) repackVisibleItems(items);
     else restoreRepack();
   } finally {
-    renderObserver?.observe(document.documentElement ?? document, OBSERVER_OPTIONS);
+    observeRender();
   }
 }
 
@@ -542,7 +560,7 @@ function applyAllGuarded() {
   try {
     applyAll();
   } finally {
-    renderObserver?.observe(document.documentElement ?? document, OBSERVER_OPTIONS);
+    observeRender();
   }
 }
 
@@ -730,13 +748,24 @@ function onEnable(utils) {
   removeStyle = api.addStyle(STYLE_ID, CSS);
 
   renderObserver = new MutationObserver(() => {
+    const present = skinUiPresent();
+    if (!present) {
+      if (skinMode) {
+        skinMode = false;
+        observeRender();
+      }
+      return;
+    }
+    if (!skinMode) {
+      skinMode = true;
+      observeRender();
+    }
     ensureSourceFilter();
-    const item = document.querySelector(SKIN_ITEM_SELECTOR);
-    if (!item && !document.querySelector(DOT_SELECTOR)) return;
     applyAllGuarded();
-    if (item) scheduleRefresh();
+    scheduleRefresh();
   });
-  renderObserver.observe(document.documentElement ?? document, OBSERVER_OPTIONS);
+  skinMode = false;
+  observeRender();
 
   window.addEventListener("resize", onWindowResize);
   unsubscribe = api.subscribe(SESSION_URI, onSessionPush);
@@ -756,6 +785,7 @@ function onDisable() {
   renderObserver = null;
   removeStyle = null;
   filterActive = false;
+  skinMode = false;
 
   resetState();
   document.querySelectorAll(`.${HIDDEN_CLASS}`).forEach((item) => item.classList.remove(HIDDEN_CLASS));

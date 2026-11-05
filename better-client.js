@@ -1,5 +1,5 @@
 const PLUGIN_ID = "better-client";
-const version = "1.6.0";
+const version = "1.7.0";
 
 const MAX_CACHE_ENTRIES = 24;
 const MAX_CACHE_ENTRY_BYTES = 2 * 1024 * 1024;
@@ -11,6 +11,10 @@ const PHASE_POLL_FALLBACK_MS = 15000;
 const IMAGE_BATCH = 160;
 const IMAGE_QUEUE_LIMIT = 4000;
 const DECISION_CACHE_LIMIT = 256;
+const DIAGNOSTICS_HEAP_MS = 30000;
+const DIAGNOSTICS_QUIET_MS = 600;
+const DIAGNOSTICS_MAX_SETTLE_MS = 6000;
+const DIAGNOSTICS_SAMPLE_LIMIT = 240;
 
 const TELEMETRY_HOST = /(^|\.)(telemetry|analytics|metrics|sentry|bugsnag|crash-?report(er)?|pulse|tracking|beacon|datadog|loggly)(\.|:|$)/i;
 const TELEMETRY_PATH = /(^|\/)(lol-telemetry|lol-analytics|lol-metrics|lol-rms|rms|lol-sentry|lol-crash|telemetry|analytics|metrics|sentry|bugsnag|crash-?report\w*|tracking|beacon|tracing)(\/|\?|$)/i;
@@ -64,6 +68,19 @@ const OPTIONS = [
     default: false,
   },
   {
+    key: "diagnostics",
+    label: "Diagnostics",
+    description: "Records long tasks, screen settle times, request counts and heap samples in memory only. Nothing is sent over the network.",
+    default: false,
+  },
+  {
+    key: "copyReport",
+    type: "action",
+    label: "Copy report",
+    description: "Copies the in-memory diagnostics summary. It contains no account, summoner, token or LCU data.",
+    onClick: () => copyDiagnosticsReport(),
+  },
+  {
     key: "blocked",
     type: "info",
     label: "Blocked telemetry",
@@ -84,6 +101,24 @@ let phaseWatchListener = null;
 let performanceMode = false;
 let removePerformanceStyle = null;
 let cacheBytes = 0;
+
+let diagnosticsOn = false;
+let diagnosticsStartedAt = 0;
+let diagnosticsLongCount = 0;
+let diagnosticsLongMs = 0;
+let diagnosticsLongMax = 0;
+let diagnosticsRequests = 0;
+let diagnosticsBytes = 0;
+let diagnosticsHeap = [];
+let diagnosticsNavSamples = [];
+let diagnosticsObservers = [];
+let diagnosticsHeapTimer = null;
+let diagnosticsNavStart = null;
+let diagnosticsNavName = "";
+let diagnosticsNavActivity = 0;
+let diagnosticsNavFrames = 0;
+let diagnosticsLastReport = "";
+let diagnosticsClickListener = null;
 
 const cache = new Map();
 const inflight = new Map();
@@ -221,6 +256,228 @@ function clearVolatileCache() {
   for (const [key, entry] of [...cache]) {
     if (entry.ttl < 60 * 60 * 1000) evictOne(key);
   }
+}
+
+function diagnosticsScreenName(target) {
+  const className = String(target?.className ?? "");
+  const match = className.match(/menu_item_navbar_([a-z]+)/i);
+  if (!match) return "Profile";
+  const name = match[1].toLowerCase();
+  return name === "league" ? "Home" : name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+function diagnosticsTouch() {
+  if (diagnosticsNavStart !== null) diagnosticsNavActivity = performance.now();
+}
+
+function diagnosticsFinishNavigation() {
+  if (diagnosticsNavStart === null) return;
+  const elapsed = Math.max(0, Math.round(performance.now() - diagnosticsNavStart));
+  const screen = diagnosticsNavName;
+  diagnosticsNavStart = null;
+  if (!screen) return;
+  diagnosticsNavSamples.push({ screen, ms: elapsed });
+  if (diagnosticsNavSamples.length > DIAGNOSTICS_SAMPLE_LIMIT) diagnosticsNavSamples.shift();
+}
+
+function diagnosticsNavFrame() {
+  if (!diagnosticsOn || diagnosticsNavStart === null) return;
+  diagnosticsNavFrames += 1;
+  const now = performance.now();
+  const age = now - diagnosticsNavStart;
+  const quiet = now - diagnosticsNavActivity;
+  if ((age >= 800 && diagnosticsNavFrames >= 2 && quiet >= DIAGNOSTICS_QUIET_MS) || age >= DIAGNOSTICS_MAX_SETTLE_MS) {
+    diagnosticsFinishNavigation();
+    return;
+  }
+  requestAnimationFrame(diagnosticsNavFrame);
+}
+
+function diagnosticsBeginNavigation(screen) {
+  if (!diagnosticsOn || !screen) return;
+  if (diagnosticsNavStart !== null) diagnosticsFinishNavigation();
+  diagnosticsNavStart = performance.now();
+  diagnosticsNavName = screen;
+  diagnosticsNavActivity = diagnosticsNavStart;
+  diagnosticsNavFrames = 0;
+  requestAnimationFrame(diagnosticsNavFrame);
+}
+
+function diagnosticsClick(event) {
+  if (!diagnosticsOn) return;
+  const target = event.target?.closest?.('[class*="menu_item_navbar_"], [class*="details-view-profile"]');
+  if (!target) return;
+  diagnosticsBeginNavigation(diagnosticsScreenName(target));
+}
+
+function diagnosticsSampleHeap() {
+  if (!diagnosticsOn) return;
+  const used = performance.memory?.usedJSHeapSize;
+  if (!Number.isFinite(used)) return;
+  diagnosticsHeap.push({ mb: +(used / 1048576).toFixed(1), at: Date.now() });
+  if (diagnosticsHeap.length > DIAGNOSTICS_SAMPLE_LIMIT) diagnosticsHeap.shift();
+}
+
+function diagnosticsStart() {
+  if (diagnosticsOn) return;
+  diagnosticsOn = true;
+  diagnosticsStartedAt = Date.now();
+  diagnosticsLongCount = 0;
+  diagnosticsLongMs = 0;
+  diagnosticsLongMax = 0;
+  diagnosticsRequests = 0;
+  diagnosticsBytes = 0;
+  diagnosticsHeap = [];
+  diagnosticsNavSamples = [];
+  diagnosticsLastReport = "";
+  diagnosticsNavStart = null;
+
+  try {
+    const longTasks = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        diagnosticsLongCount += 1;
+        diagnosticsLongMs += entry.duration;
+        diagnosticsLongMax = Math.max(diagnosticsLongMax, entry.duration);
+        diagnosticsTouch();
+      }
+    });
+    longTasks.observe({ entryTypes: ["longtask"] });
+    diagnosticsObservers.push(longTasks);
+  } catch {}
+
+  try {
+    const resources = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        diagnosticsRequests += 1;
+        diagnosticsBytes += Number(entry.transferSize || entry.encodedBodySize || 0);
+        diagnosticsTouch();
+      }
+    });
+    resources.observe({ entryTypes: ["resource"] });
+    diagnosticsObservers.push(resources);
+  } catch {}
+
+  try {
+    const mutations = new MutationObserver(diagnosticsTouch);
+    mutations.observe(document.documentElement ?? document, { childList: true, subtree: true });
+    diagnosticsObservers.push(mutations);
+  } catch {}
+
+  diagnosticsClickListener = diagnosticsClick;
+  document.addEventListener("click", diagnosticsClickListener, true);
+  diagnosticsSampleHeap();
+  diagnosticsHeapTimer = setInterval(diagnosticsSampleHeap, DIAGNOSTICS_HEAP_MS);
+}
+
+function diagnosticsStop() {
+  if (!diagnosticsOn) return;
+  if (diagnosticsNavStart !== null) diagnosticsFinishNavigation();
+  diagnosticsLastReport = diagnosticsReportText();
+  diagnosticsOn = false;
+  for (const observer of diagnosticsObservers) {
+    try {
+      observer.disconnect();
+    } catch {}
+  }
+  diagnosticsObservers = [];
+  clearInterval(diagnosticsHeapTimer);
+  diagnosticsHeapTimer = null;
+  if (diagnosticsClickListener) document.removeEventListener("click", diagnosticsClickListener, true);
+  diagnosticsClickListener = null;
+  diagnosticsNavStart = null;
+}
+
+function diagnosticsPlugins() {
+  try {
+    return api
+      ?.getPlugins?.()
+      .filter((plugin) => plugin.enabled)
+      .map((plugin) => plugin.name)
+      .join(", ") || "none";
+  } catch {
+    return "unknown";
+  }
+}
+
+function diagnosticsDuration(ms) {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+function diagnosticsMedian(values) {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
+}
+
+function diagnosticsReportText() {
+  if (!diagnosticsOn && diagnosticsLastReport) return diagnosticsLastReport;
+  const duration = diagnosticsStartedAt ? diagnosticsDuration(Date.now() - diagnosticsStartedAt) : "0s";
+  const lines = [
+    "Perfectionism diagnostics",
+    `Duration: ${duration}`,
+    `Plugins on: ${diagnosticsPlugins()}`,
+    `Long tasks: ${diagnosticsLongCount}, ${Math.round(diagnosticsLongMs)} ms total, ${Math.round(diagnosticsLongMax)} ms max`,
+    `Requests: ${diagnosticsRequests}, ${(diagnosticsBytes / 1048576).toFixed(1)} MB`,
+  ];
+
+  if (diagnosticsHeap.length > 0) {
+    const first = diagnosticsHeap[0].mb;
+    const last = diagnosticsHeap[diagnosticsHeap.length - 1].mb;
+    const peak = Math.max(...diagnosticsHeap.map((sample) => sample.mb));
+    lines.push(`Heap: ${first.toFixed(1)} MB start, ${last.toFixed(1)} MB latest, ${peak.toFixed(1)} MB peak (${diagnosticsHeap.length} samples)`);
+  } else {
+    lines.push("Heap: unavailable");
+  }
+
+  if (diagnosticsNavSamples.length === 0) {
+    lines.push("Screens: no navigation samples");
+  } else {
+    lines.push("Screens:");
+    const order = [];
+    const grouped = new Map();
+    for (const sample of diagnosticsNavSamples) {
+      if (!grouped.has(sample.screen)) {
+        grouped.set(sample.screen, []);
+        order.push(sample.screen);
+      }
+      grouped.get(sample.screen).push(sample.ms);
+    }
+    for (const screen of order) {
+      const values = grouped.get(screen);
+      lines.push(`  ${screen}: ${values.length}x, ${diagnosticsMedian(values)} ms median, ${Math.min(...values)}-${Math.max(...values)} ms`);
+    }
+  }
+
+  lines.push("Local only. Nothing is uploaded.");
+  return lines.join("\n");
+}
+
+async function copyDiagnosticsReport() {
+  const text = diagnosticsOn ? diagnosticsReportText() : diagnosticsLastReport || diagnosticsReportText();
+  if (!diagnosticsOn) diagnosticsLastReport = text;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return text;
+    }
+  } catch {}
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  try {
+    document.execCommand("copy");
+  } finally {
+    area.remove();
+  }
+  return text;
 }
 
 function champSelectDataPath(url) {
@@ -767,11 +1024,13 @@ function onEnable(utils) {
   startPhaseWatch();
   performanceMode = api.getOption?.(PLUGIN_ID, "performanceMode") === true;
   applyPerformanceMode();
+  if (api.getOption?.(PLUGIN_ID, "diagnostics") === true) diagnosticsStart();
   if (phase === "InProgress") startUngate();
 }
 
 function onDisable() {
   active = false;
+  diagnosticsStop();
   stopPhaseWatch();
   stopUngate();
   for (const off of unsubscribes) {
@@ -803,6 +1062,10 @@ function onOptionChange(key, value) {
   if (key === "performanceMode") {
     performanceMode = value === true;
     applyPerformanceMode();
+  }
+  if (key === "diagnostics") {
+    if (value === true) diagnosticsStart();
+    else diagnosticsStop();
   }
 }
 

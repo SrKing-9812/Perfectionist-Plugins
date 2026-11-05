@@ -6,7 +6,7 @@ const PANEL_ID = "perfectionist-plugins-panel";
 const STYLE_ID = "perfectionist-plugins-style";
 const TAB_TITLE = "Perfectionism";
 
-export const version = "2.2.0";
+export const version = "2.4.0";
 
 const PKG = "perfectionist-plugins";
 const CDN = "https://cdn.jsdelivr.net/npm";
@@ -26,7 +26,7 @@ const BUNDLED_MODULES = [
     id: "better-client",
     file: "better-client.js",
     name: "BetterClient",
-    version: "1.5.0",
+    version: "1.7.0",
     description: "Debloats the client: blocks telemetry, merges duplicate requests, caches immutable data, decodes images asynchronously and fixes several bugs.",
   },
   {
@@ -47,7 +47,7 @@ const BUNDLED_MODULES = [
     id: "hide-unowned-skins",
     file: "hide-unowned-skins.js",
     name: "Hide Unowned Skins",
-    version: "2.5.0",
+    version: "2.5.1",
     description: "In champion select, only shows the skins you own for the picked champion.",
   },
   {
@@ -680,6 +680,28 @@ function buildChips(mod, option, locked) {
   return block;
 }
 
+function buildAction(option, locked) {
+  const button = el("button", "perf-btn", option.label);
+  button.type = "button";
+  button.title = option.description ?? "";
+  button.disabled = Boolean(locked);
+  button.addEventListener("click", async () => {
+    const original = button.textContent;
+    button.disabled = true;
+    try {
+      await option.onClick?.();
+      button.textContent = "Copied";
+    } catch {
+      button.textContent = "Copy failed";
+    }
+    setTimeout(() => {
+      button.textContent = original;
+      button.disabled = Boolean(locked);
+    }, 1600);
+  });
+  return button;
+}
+
 function buildOptions(mod, locked) {
   const options = registry.get(mod.id)?.options ?? [];
   if (options.length === 0) return null;
@@ -691,6 +713,10 @@ function buildOptions(mod, locked) {
     }
     if (option.type === "info") {
       wrap.append(buildInfo(option));
+      continue;
+    }
+    if (option.type === "action") {
+      wrap.append(buildAction(option, locked));
       continue;
     }
     if (!option.children?.length) {
