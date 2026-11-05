@@ -127,6 +127,9 @@ const STYLE_CSS = `
 #${PANEL_ID} .perf-chip:hover { color: #f0e6d2; border-color: #c89b3c; }
 #${PANEL_ID} .perf-chip--on { color: #010a13; background: #c89b3c; border-color: #c89b3c; }
 #${PANEL_ID} .perf-chip--on:hover { background: #f0e6d2; }
+#${PANEL_ID} .perf-info { margin-top: 11px; padding-top: 8px; border-top: 1px solid rgba(120, 90, 40, 0.35); }
+#${PANEL_ID} .perf-info-line { font-size: 10px; line-height: 16px; letter-spacing: 0.2px; color: #a09b8c;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 #${PANEL_ID} .perf-tools { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; margin-bottom: 14px; }
 #${PANEL_ID} .perf-search { flex: 1 1 auto; min-width: 0; box-sizing: border-box;
@@ -184,26 +187,9 @@ async function loadState() {
   }
   if (saved?.installed && typeof saved.installed === "object") {
     state = { installed: saved.installed, enabled: saved.enabled ?? {}, options: saved.options ?? {}, masterLocked: saved.masterLocked === true };
-    if (migrateLootRemake()) saveState();
     return;
   }
   saveState();
-}
-
-// Loot Remake used to be its own plugin. Fold an existing install into BetterClient's
-// Pages Remake option so nobody loses the feature after the move.
-function migrateLootRemake() {
-  const legacy = state.enabled?.["loot-remake"];
-  const installed = state.installed?.["loot-remake"];
-  if (legacy === undefined && installed === undefined && state.options?.["loot-remake"] === undefined) return false;
-  if (legacy === true) {
-    if (!state.options["better-client"]) state.options["better-client"] = {};
-    if (state.options["better-client"].pagesRemake === undefined) state.options["better-client"].pagesRemake = true;
-  }
-  delete state.installed["loot-remake"];
-  delete state.enabled["loot-remake"];
-  delete state.options["loot-remake"];
-  return true;
 }
 
 function saveState() {
@@ -661,6 +647,17 @@ function buildOptionRow(mod, option, disabled, onChange) {
   return row;
 }
 
+function buildInfo(option) {
+  const block = el("div", "perf-info");
+  if (option.label) block.append(el("div", "perf-chips-label", option.label));
+  let lines = [];
+  try {
+    lines = option.lines?.() ?? [];
+  } catch {}
+  for (const line of lines) block.append(el("div", "perf-info-line", String(line)));
+  return block;
+}
+
 function buildChips(mod, option, locked) {
   const block = el("div", "perf-chip-block");
   block.title = option.description ?? "";
@@ -690,6 +687,10 @@ function buildOptions(mod, locked) {
   for (const option of options) {
     if (option.type === "chips") {
       wrap.append(buildChips(mod, option, locked));
+      continue;
+    }
+    if (option.type === "info") {
+      wrap.append(buildInfo(option));
       continue;
     }
     if (!option.children?.length) {

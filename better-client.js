@@ -1,5 +1,5 @@
 const PLUGIN_ID = "better-client";
-const version = "1.5.0";
+const version = "1.6.0";
 
 const MAX_CACHE_ENTRIES = 24;
 const MAX_CACHE_ENTRY_BYTES = 2 * 1024 * 1024;
@@ -13,7 +13,7 @@ const IMAGE_QUEUE_LIMIT = 4000;
 const DECISION_CACHE_LIMIT = 256;
 
 const TELEMETRY_HOST = /(^|\.)(telemetry|analytics|metrics|sentry|bugsnag|crash-?report(er)?|pulse|tracking|beacon|datadog|loggly)(\.|:|$)/i;
-const TELEMETRY_PATH = /(^|\/)(lol-telemetry|lol-analytics|lol-metrics|lol-rms|rms|lol-sentry|lol-crash|telemetry|analytics|metrics|sentry|bugsnag|crash-?report\w*|tracking|beacon)(\/|\?|$)/i;
+const TELEMETRY_PATH = /(^|\/)(lol-telemetry|lol-analytics|lol-metrics|lol-rms|rms|lol-sentry|lol-crash|telemetry|analytics|metrics|sentry|bugsnag|crash-?report\w*|tracking|beacon|tracing)(\/|\?|$)/i;
 const ASSET_PATH = /^\/lol-game-data\/assets\//i;
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
@@ -62,15 +62,13 @@ const OPTIONS = [
     default: false,
   },
   {
-    key: "pagesRemake",
-    label: "Pages Remake",
-    description:
-      "Replaces supported screens (Loot for now) with a plain-DOM view that skips Ember's per-element build. The remake code is only downloaded while this is on, and any failure puts Riot's original page back instantly.",
-    default: false,
+    key: "blocked",
+    type: "info",
+    label: "Blocked telemetry",
+    description: "Requests dropped at the client UI layer and answered with an empty success.",
+    lines: () => blockedSummary(),
   },
 ];
-
-const PAGES_REMAKE_FILE = "loot-remake.js";
 
 let api = null;
 let active = false;
@@ -83,14 +81,12 @@ let phaseTimer = null;
 let phaseWatchListener = null;
 let performanceMode = false;
 let removePerformanceStyle = null;
-let pagesRemakeModule = null;
-let pagesRemakePending = null;
-let pagesRemakeWanted = false;
 let cacheBytes = 0;
 
 const cache = new Map();
 const inflight = new Map();
 const blockDecisions = new Map();
+const blockedStats = new Map();
 
 function baseHref() {
   try {
@@ -133,8 +129,34 @@ function isTelemetryUrl(raw, base) {
   return verdict;
 }
 
+function blockedKey(raw) {
+  const url = resolveUrl(raw);
+  if (!url) return String(raw).slice(0, 80);
+  if (isLocalHost(url.hostname)) return url.pathname.split("/").slice(0, 3).join("/") || url.pathname;
+  return url.hostname;
+}
+
+function recordBlocked(raw) {
+  const key = blockedKey(raw);
+  blockedStats.set(key, (blockedStats.get(key) ?? 0) + 1);
+  try {
+    window.__betterBlocked = Object.fromEntries(blockedStats);
+  } catch {}
+}
+
+function blockedSummary() {
+  const entries = [...blockedStats.entries()].sort((a, b) => b[1] - a[1]);
+  const total = entries.reduce((sum, entry) => sum + entry[1], 0);
+  const lines = entries.slice(0, 6).map(([key, count]) => `${key}  x${count}`);
+  if (lines.length === 0) lines.push("Nothing blocked since the client started.");
+  lines.push(`Total: ${total} request${total === 1 ? "" : "s"} answered locally.`);
+  return lines;
+}
+
 function shouldBlockUrl(raw, base) {
-  return isTelemetryUrl(raw, base);
+  const verdict = isTelemetryUrl(raw, base);
+  if (verdict) recordBlocked(raw);
+  return verdict;
 }
 
 function staticTtl(path) {
@@ -374,6 +396,11 @@ function installBeacon(env) {
   };
 }
 
+let mediaObserver = null;
+let mediaScanObserver = null;
+let mediaVisibilityListener = null;
+let mediaPaused = new WeakSet();
+
 let imageObserver = null;
 let imageQueue = [];
 let imageFlushTimer = null;
@@ -460,6 +487,74 @@ function enqueueImages(root) {
   imageQueue.push(root);
   scheduleImageFlush();
   return 1;
+}
+
+function pauseDecorativeVideo(video) {
+  if (!video || video.tagName !== "VIDEO" || video.paused) return;
+  if (!video.autoplay && !video.muted) return;
+  try {
+    video.pause();
+    mediaPaused.add(video);
+  } catch {}
+}
+
+function resumeDecorativeVideo(video) {
+  if (!video || !mediaPaused.has(video)) return;
+  mediaPaused.delete(video);
+  try {
+    const play = video.play?.();
+    if (play?.catch) play.catch(() => {});
+  } catch {}
+}
+
+function installMediaIdle() {
+  if (typeof document === "undefined" || !document.documentElement) return () => {};
+  const Obs = document.defaultView?.IntersectionObserver ?? IntersectionObserver;
+  const Mut = document.defaultView?.MutationObserver ?? MutationObserver;
+  if (!Obs || !Mut) return () => {};
+  mediaObserver = new Obs(
+    (entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) resumeDecorativeVideo(entry.target);
+        else pauseDecorativeVideo(entry.target);
+      }
+    },
+    { rootMargin: "240px" },
+  );
+  const scan = () => {
+    for (const video of document.querySelectorAll("video")) {
+      if (video.__betterMedia) continue;
+      video.__betterMedia = true;
+      try {
+        mediaObserver.observe(video);
+      } catch {}
+    }
+  };
+  scan();
+  mediaScanObserver = new Mut(scan);
+  try {
+    mediaScanObserver.observe(document.documentElement, { childList: true, subtree: true });
+  } catch {}
+  mediaVisibilityListener = () => {
+    if (pageHidden()) {
+      for (const video of document.querySelectorAll("video")) pauseDecorativeVideo(video);
+      return;
+    }
+    scan();
+    for (const video of document.querySelectorAll("video")) {
+      if (video.getClientRects().length > 0) resumeDecorativeVideo(video);
+    }
+  };
+  document.addEventListener("visibilitychange", mediaVisibilityListener);
+  return () => {
+    document.removeEventListener("visibilitychange", mediaVisibilityListener);
+    mediaVisibilityListener = null;
+    mediaScanObserver?.disconnect();
+    mediaScanObserver = null;
+    mediaObserver?.disconnect();
+    mediaObserver = null;
+    mediaPaused = new WeakSet();
+  };
 }
 
 function installImageDecode() {
@@ -652,50 +747,10 @@ function installNetwork(env) {
   };
 }
 
-function applyPagesRemake(on) {
-  pagesRemakeWanted = on === true;
-  if (!pagesRemakeWanted) {
-    try {
-      pagesRemakeModule?.disable();
-    } catch (error) {
-      console.warn("[BetterClient] Pages Remake did not shut down cleanly.", error);
-    }
-    return;
-  }
-  if (!active || !api) return;
-  if (pagesRemakeModule) {
-    try {
-      pagesRemakeModule.enable(api);
-    } catch (error) {
-      console.warn("[BetterClient] Pages Remake failed; the original pages stay in place.", error);
-    }
-    return;
-  }
-  if (pagesRemakePending) return;
-  const loader = api.loadPluginFile;
-  if (typeof loader !== "function") {
-    console.warn("[BetterClient] Pages Remake needs a newer core to load; the original pages stay in place.");
-    return;
-  }
-  pagesRemakePending = Promise.resolve()
-    .then(() => loader(PAGES_REMAKE_FILE))
-    .then((module) => {
-      pagesRemakeModule = module;
-      if (pagesRemakeWanted && active) module.enable(api);
-    })
-    .catch((error) => {
-      pagesRemakeModule = null;
-      console.warn("[BetterClient] Pages Remake could not load; the original pages stay in place.", error);
-    })
-    .finally(() => {
-      pagesRemakePending = null;
-    });
-}
-
 function onEnable(utils) {
   api = utils;
   active = true;
-  restores = [installNetwork(window), installImageDecode()];
+  restores = [installNetwork(window), installImageDecode(), installMediaIdle()];
   unsubscribes = [];
   try {
     const off = api.subscribe("/lol-gameflow/v1/gameflow-phase", onPhase);
@@ -710,12 +765,10 @@ function onEnable(utils) {
   startPhaseWatch();
   performanceMode = api.getOption?.(PLUGIN_ID, "performanceMode") === true;
   applyPerformanceMode();
-  applyPagesRemake(api.getOption?.(PLUGIN_ID, "pagesRemake") === true);
   if (phase === "InProgress") startUngate();
 }
 
 function onDisable() {
-  applyPagesRemake(false);
   active = false;
   stopPhaseWatch();
   stopUngate();
@@ -738,6 +791,7 @@ function onDisable() {
   performanceMode = false;
   inflight.clear();
   blockDecisions.clear();
+  blockedStats.clear();
   for (const key of [...cache.keys()]) evictOne(key);
   cacheBytes = 0;
   api = null;
@@ -747,9 +801,7 @@ function onOptionChange(key, value) {
   if (key === "performanceMode") {
     performanceMode = value === true;
     applyPerformanceMode();
-    return;
   }
-  if (key === "pagesRemake") applyPagesRemake(value === true);
 }
 
 export function init() {
