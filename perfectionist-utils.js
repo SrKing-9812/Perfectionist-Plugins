@@ -6,7 +6,7 @@ const PANEL_ID = "perfectionist-plugins-panel";
 const STYLE_ID = "perfectionist-plugins-style";
 const TAB_TITLE = "Perfectionism";
 
-export const version = "2.1.0";
+export const version = "2.2.0";
 
 const PKG = "perfectionist-plugins";
 const CDN = "https://cdn.jsdelivr.net/npm";
@@ -26,15 +26,8 @@ const BUNDLED_MODULES = [
     id: "better-client",
     file: "better-client.js",
     name: "BetterClient",
-    version: "1.4.0",
+    version: "1.5.0",
     description: "Debloats the client: blocks telemetry, merges duplicate requests, caches immutable data, decodes images asynchronously and fixes several bugs.",
-  },
-  {
-    id: "loot-remake",
-    file: "loot-remake.js",
-    name: "Loot Remake",
-    version: "0.1.0",
-    description: "Replaces the Loot screen with a plain-DOM view of the same inventory, skipping Ember's per-element build. Read-only preview.",
   },
   {
     id: "ban-blocker",
@@ -191,9 +184,26 @@ async function loadState() {
   }
   if (saved?.installed && typeof saved.installed === "object") {
     state = { installed: saved.installed, enabled: saved.enabled ?? {}, options: saved.options ?? {}, masterLocked: saved.masterLocked === true };
+    if (migrateLootRemake()) saveState();
     return;
   }
   saveState();
+}
+
+// Loot Remake used to be its own plugin. Fold an existing install into BetterClient's
+// Pages Remake option so nobody loses the feature after the move.
+function migrateLootRemake() {
+  const legacy = state.enabled?.["loot-remake"];
+  const installed = state.installed?.["loot-remake"];
+  if (legacy === undefined && installed === undefined && state.options?.["loot-remake"] === undefined) return false;
+  if (legacy === true) {
+    if (!state.options["better-client"]) state.options["better-client"] = {};
+    if (state.options["better-client"].pagesRemake === undefined) state.options["better-client"].pagesRemake = true;
+  }
+  delete state.installed["loot-remake"];
+  delete state.enabled["loot-remake"];
+  delete state.options["loot-remake"];
+  return true;
 }
 
 function saveState() {
@@ -346,6 +356,14 @@ function moduleUrl(file) {
 
 function importModule(url) {
   return coords?.importModule ? coords.importModule(url) : import(url);
+}
+
+// Lets a feature module (BetterClient → Pages Remake) pull its code only when enabled.
+// A local override keeps the dev harness on freshly edited files instead of the CDN copy.
+function loadPluginFile(file) {
+  const local = typeof window !== "undefined" ? window.PerfectionistLocalBase : null;
+  const url = local ? new URL(file, local).href : moduleUrl(file);
+  return importModule(url);
 }
 
 async function installModule(mod) {
@@ -1027,6 +1045,7 @@ const utils = {
   getAvailableModules,
   installModule,
   uninstallModule,
+  loadPluginFile,
   checkForUpdates,
   watch,
   waitFor,

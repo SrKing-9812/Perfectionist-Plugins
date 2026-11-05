@@ -1,4 +1,4 @@
-export const version = "0.2.0";
+export const version = "1.0.0";
 
 const ID = "loot-remake";
 const ROOT_ID = "perf-loot-root";
@@ -43,57 +43,106 @@ const TITLES = {
   ETERNAL: "Eternals",
   EMOTE: "Emotes",
   WARDSKIN: "Ward Skins",
-  SUMMONERICON: "Summoner Icons",
+  SUMMONERICON: "Icons",
   CHEST: "Chests",
   "": "Other",
 };
 
 const ORDER = ["MATERIAL", "CHAMPION", "SKIN", "ETERNAL", "EMOTE", "WARDSKIN", "SUMMONERICON", "CHEST", ""];
 const RARITY_ICONS = new Set(["LEGENDARY", "EPIC", "RARE"]);
-const CURRENCIES = ["CURRENCY_cosmetic", "MATERIAL_key", "CURRENCY_mythic"];
+const TYPE_LABELS = {
+  CHAMPION: "Champion Shard",
+  CHAMPION_SKIN: "Skin Shard",
+  WARD_SKIN: "Ward Skin",
+  SUMMONER_ICON: "Summoner Icon",
+  EMOTE: "Emote",
+  ETERNAL: "Eternal",
+};
+const CURRENCIES = [
+  ["CURRENCY_cosmetic", "CURRENCY_cosmetic"],
+  ["MATERIAL_key", "MATERIAL_key"],
+  ["CURRENCY_chest", "chest_generic"],
+];
+const SORT_OPTIONS = [
+  ["alphabetical", "Alphabetical"],
+  ["value", "Value"],
+  ["rarity", "Rarity"],
+  ["champion", "Champion"],
+  ["activatable", "Activatable"],
+  ["selected_quantity", "Selection"],
+];
 const ACTION_LABELS = { REROLL: "Reroll", DISENCHANT: "Disenchant", UPGRADE: "Upgrade", OPEN: "Open", CRAFT: "Craft", redeem: "Redeem" };
 
 const CSS = `
-#${ROOT_ID} { position: absolute; left: 0; right: 0; top: 0; bottom: 0; z-index: 1; overflow: hidden; background: #010a13;
+#${ROOT_ID} { position: absolute; left: 0; right: 0; top: 80px; bottom: 0; z-index: 1; overflow: hidden; background: #010a13;
   color: #f0e6d2; font-family: "LoL Body", Arial, "Helvetica Neue", Helvetica, sans-serif; }
 #${ROOT_ID} .pl-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #010a13; }
+#${ROOT_ID} .pl-backdrop--static { background: radial-gradient(90% 120% at 62% 38%, #16324a 0%, #0b2236 38%, #061522 70%, #030c15 100%); }
 #${ROOT_ID} .pl-veil { position: absolute; inset: 0; pointer-events: none;
-  background: linear-gradient(90deg, rgba(1, 10, 19, 0.9) 0%, rgba(1, 10, 19, 0.55) 40%, rgba(1, 10, 19, 0.3) 100%); }
-#${ROOT_ID} .pl-subnav { position: absolute; left: 17px; top: 92px; height: 20px; display: flex; align-items: center; gap: 21px; }
-#${ROOT_ID} .pl-subnav-item { font-family: "LoL Display", "Times New Roman", Times, serif; font-size: 12px; font-weight: 700;
-  letter-spacing: 0.9px; text-transform: uppercase; color: #a09b8c; cursor: pointer; padding-bottom: 3px; border-bottom: 2px solid transparent; }
+  background: linear-gradient(90deg, rgba(1, 10, 19, 0.55) 0%, rgba(1, 10, 19, 0.2) 42%, rgba(1, 10, 19, 0.06) 100%); }
+#${ROOT_ID} .pl-subnav { position: absolute; left: 17px; top: 12px; height: 20px; }
+#${ROOT_ID} .pl-subnav-item { position: absolute; top: 0; height: 20px; display: flex; align-items: center;
+  font-family: "LoL Display", "Times New Roman", Times, serif; font-size: 12px; font-weight: 500;
+  letter-spacing: 1.2px; text-transform: uppercase; color: #a09b8c; cursor: pointer; white-space: nowrap; }
 #${ROOT_ID} .pl-subnav-item:hover { color: #f0e6d2; }
-#${ROOT_ID} .pl-subnav-item--on { color: #f0e6d2; border-bottom-color: #c89b3c; }
-#${ROOT_ID} .pl-tabs { position: absolute; left: 1px; top: 125px; width: 60px; display: flex; flex-direction: column; gap: 6px; }
-#${ROOT_ID} .pl-tab { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
-  cursor: pointer; opacity: 0.5; border: 1px solid transparent; box-sizing: border-box; }
-#${ROOT_ID} .pl-tab img { width: 22px; height: 22px; }
-#${ROOT_ID} .pl-tab:hover { opacity: 0.85; }
-#${ROOT_ID} .pl-tab--on { opacity: 1; height: 36px; border-color: #c89b3c; background: rgba(200, 155, 60, 0.12); }
-#${ROOT_ID} .pl-tools { position: absolute; left: 61px; top: 125px; display: flex; gap: 10px; align-items: center; }
-#${ROOT_ID} .pl-search { width: 200px; height: 32px; box-sizing: border-box; padding: 0 10px 0 30px;
-  font-family: "LoL Body", Arial, sans-serif; font-size: 12px; letter-spacing: 1.2px; color: #a09b8c;
+#${ROOT_ID} .pl-subnav-item--on { color: #f0e6d2; }
+#${ROOT_ID} .pl-subnav-sep { position: absolute; left: 115px; top: 2px; width: 1px; height: 16px; background: #3c3c41; }
+#${ROOT_ID} .pl-tabs { position: absolute; left: 1px; top: 45px; width: 60px; }
+#${ROOT_ID} .pl-tab { position: relative; width: 32px; height: 32px; margin-bottom: 10px; opacity: 0.5;
+  cursor: pointer; box-sizing: border-box; }
+#${ROOT_ID} .pl-tab img { width: 20px; height: 20px; margin: 6px 6px 6px 18px; opacity: 0.7; display: block; }
+#${ROOT_ID} .pl-tab:hover { opacity: 0.8; }
+#${ROOT_ID} .pl-tab--on { opacity: 1; height: 36px; }
+#${ROOT_ID} .pl-tab--on::after { content: ""; position: absolute; left: 0; top: 0; width: 4px; height: 32px; background: #c89b3c; }
+#${ROOT_ID} .pl-tools { position: absolute; left: 61px; top: 45px; width: 342px; height: 32px; }
+#${ROOT_ID} .pl-search { position: absolute; left: 0; top: 0; width: 200px; height: 32px; box-sizing: border-box;
+  padding: 0 24px 0 27px; font-family: "LoL Body", Arial, sans-serif; font-size: 12px; letter-spacing: 1.2px; color: #a09b8c;
   background: rgba(0, 0, 0, 0.7) url("/fe/lol-static-assets/images/uikit/magnifying-glass-icon.png") 9px center / 14px no-repeat;
-  border: 1px solid #785a28; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25); outline: none; }
+  border: 1px solid #785a28; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25); outline: none;
+  -webkit-appearance: none; appearance: none; }
 #${ROOT_ID} .pl-search:focus { border-color: #c89b3c; color: #f0e6d2; }
 #${ROOT_ID} .pl-search::placeholder { color: #a09b8c; }
-#${ROOT_ID} .pl-sort { width: 118px; height: 32px; box-sizing: border-box; padding: 0 24px 0 10px;
-  appearance: none; -webkit-appearance: none; cursor: pointer;
-  font-family: "LoL Body", Arial, sans-serif; font-size: 12px; letter-spacing: 1.1px; color: #a09b8c;
-  background: rgba(0, 0, 0, 0.7) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M0 0h10L5 6z' fill='%23c8aa6e'/></svg>") right 8px center / 10px 6px no-repeat;
-  border: 1px solid #785a28; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25); outline: none; }
-#${ROOT_ID} .pl-sort:focus { border-color: #c89b3c; color: #f0e6d2; }
-#${ROOT_ID} .pl-sort option { background: #010a13; color: #cdbe91; }
-#${ROOT_ID} .pl-panel { position: absolute; left: 61px; top: 177px; width: 342px; height: 445px;
+#${ROOT_ID} .pl-search::-webkit-search-cancel-button { display: none; }
+#${ROOT_ID} .pl-clear { display: none; position: absolute; left: 176px; top: 8px; width: 16px; height: 16px;
+  padding: 0; border: 0; background: transparent url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12'><path d='M2 2l8 8M10 2l-8 8' stroke='%23a09b8c' stroke-width='1.6' stroke-linecap='round'/></svg>") center / 12px no-repeat;
+  cursor: pointer; z-index: 2; }
+#${ROOT_ID} .pl-clear--on { display: block; }
+#${ROOT_ID} .pl-clear:hover { filter: brightness(1.35); }
+#${ROOT_ID} .pl-sort { position: absolute; left: 204px; top: 0; width: 118px; height: 32px; box-sizing: border-box;
+  cursor: pointer; outline: none; background: rgba(0, 0, 0, 0.7);
+  border: 1px solid transparent;
+  border-image: linear-gradient(to top, #695625 0%, #a9852d 23%, #b88d35 93%, #c8aa6e 100%) 1; }
+#${ROOT_ID} .pl-sort:hover, #${ROOT_ID} .pl-sort--open { border-image: linear-gradient(to top, #c89b3c, #f0e6d2) 1; }
+#${ROOT_ID} .pl-sort-value { position: absolute; left: 8px; top: 8px; font-family: "LoL Body", Arial, sans-serif;
+  font-size: 12px; line-height: 16px; letter-spacing: 0.3px; color: #a09b8c; }
+#${ROOT_ID} .pl-sort:hover .pl-sort-value, #${ROOT_ID} .pl-sort--open .pl-sort-value { color: #f0e6d2; }
+#${ROOT_ID} .pl-sort-caret { position: absolute; right: 7px; top: 10px; width: 8px; height: 12px;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='12'><path d='M1 4l3-3 3 3' fill='none' stroke='%23c8aa6e' stroke-width='1.3'/><path d='M1 8l3 3 3-3' fill='none' stroke='%23c8aa6e' stroke-width='1.3'/></svg>") center / 8px 12px no-repeat; }
+#${ROOT_ID} .pl-sort-menu { display: none; position: absolute; left: -1px; top: 32px; width: 118px; box-sizing: border-box;
+  background: #010a13; border: 1px solid transparent;
+  border-image: linear-gradient(to top, #695625, #463714) 1; z-index: 6; }
+#${ROOT_ID} .pl-sort--open .pl-sort-menu { display: block; }
+#${ROOT_ID} .pl-sort-option { position: relative; height: 35px; box-sizing: border-box; padding: 0 24px 0 9px;
+  display: flex; align-items: center; font-family: "LoL Body", Arial, sans-serif; font-size: 12px;
+  letter-spacing: 0.3px; color: #a09b8c; cursor: pointer; }
+#${ROOT_ID} .pl-sort-option:hover { background: #1e2328; color: #f0e6d2; }
+#${ROOT_ID} .pl-sort-option--on { color: #f0e6d2; }
+#${ROOT_ID} .pl-sort-option--on::after { content: ""; position: absolute; right: 9px; top: 11px; width: 13px; height: 13px;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14'><path d='M2 7.5l3.2 3.2L12 3.4' fill='none' stroke='%23c8aa6e' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/></svg>") center / 14px no-repeat; }
+#${ROOT_ID} .pl-panel { position: absolute; left: 61px; top: 97px; width: 342px; height: 445px;
   overflow-y: auto; overflow-x: hidden; }
-#${ROOT_ID} .pl-panel::-webkit-scrollbar { width: 8px; }
-#${ROOT_ID} .pl-panel::-webkit-scrollbar-track { background: rgba(1, 10, 19, 0.6); }
-#${ROOT_ID} .pl-panel::-webkit-scrollbar-thumb { background: #785a28; }
-#${ROOT_ID} .pl-grid { padding: 0 0 20px; }
-#${ROOT_ID} .pl-section-title { display: flex; align-items: center; gap: 8px; padding: 5px 0 2px;
-  font-family: "LoL Display", "Times New Roman", Times, serif; font-size: 12px; letter-spacing: 0.6px;
-  text-transform: uppercase; color: #a09b8c; }
-#${ROOT_ID} .pl-section-title hr { flex: 1 1 auto; height: 0; margin: 0; border: 0; border-top: 1px solid rgba(120, 90, 40, 0.55); }
+#${ROOT_ID} .pl-panel::-webkit-scrollbar { width: 11px; height: 11px; background: transparent; }
+#${ROOT_ID} .pl-panel::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 6px;
+  background-clip: padding-box; min-height: 32px; background-color: #785a28; }
+#${ROOT_ID} .pl-panel::-webkit-scrollbar-thumb:hover { background-color: #c8aa6e; }
+#${ROOT_ID} .pl-panel::-webkit-scrollbar-track { background: transparent; }
+#${ROOT_ID} .pl-grid { width: 332px; padding: 0 0 20px; }
+#${ROOT_ID} .pl-section-title { padding: 0; }
+#${ROOT_ID} .pl-section-text { font-family: "LoL Display", "Times New Roman", Times, serif; font-size: 12px;
+  font-weight: 700; line-height: 16px; letter-spacing: 0.9px; text-transform: uppercase; color: #a09b8c;
+  padding: 5px 0 2px; }
+#${ROOT_ID} .pl-section-title hr { height: 1px; margin: 2px 0 14px; border: 0;
+  background: linear-gradient(90deg, rgba(120, 90, 40, 0.85) 0%, rgba(120, 90, 40, 0.25) 100%); }
 #${ROOT_ID} .pl-tiles { display: flex; flex-wrap: wrap; }
 #${ROOT_ID} .pl-tile { position: relative; width: 69px; height: 69px; margin: 0 12px 16px 2px; cursor: pointer; }
 #${ROOT_ID} .pl-art { position: absolute; inset: 0; background-color: #0a1428; background-size: cover; background-position: center; }
@@ -109,9 +158,8 @@ const CSS = `
   color: #f0e6d2; text-shadow: 0 0 3px #000, 0 0 6px #000; pointer-events: none; }
 #${ROOT_ID} .pl-new { position: absolute; right: 3px; top: 3px; width: 6px; height: 6px; z-index: 2;
   border-radius: 50%; background: #c89b3c; box-shadow: 0 0 5px #c89b3c; pointer-events: none; }
-#${ROOT_ID} .pl-detail { position: absolute; left: 430px; top: 177px; width: 420px; display: none; }
+#${ROOT_ID} .pl-detail { position: absolute; left: 430px; top: 97px; width: 420px; display: none; }
 #${ROOT_ID} .pl-detail--on { display: block; }
-#${ROOT_ID} .pl-backdrop--static { background: radial-gradient(120% 90% at 30% 20%, #0a1a2b 0%, #010a19 55%, #010a13 100%); }
 #${ROOT_ID} .pl-toast { position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 7;
   padding: 9px 16px; background: rgba(1, 10, 19, 0.96); border: 1px solid #785a28;
   font-size: 12px; letter-spacing: 0.4px; color: #cdbe91; white-space: nowrap; }
@@ -126,17 +174,46 @@ const CSS = `
 #${ROOT_ID} .pl-action:hover { color: #f0e6d2; border-color: #c89b3c; background: #1e2328; }
 #${ROOT_ID} .pl-action:disabled { opacity: 0.45; cursor: default; }
 #${ROOT_ID} .pl-cost { display: block; font-size: 10px; letter-spacing: 0.4px; color: #a09b8c; text-transform: none; margin-top: 2px; }
-#${ROOT_ID} .pl-footer { position: absolute; left: 149px; top: 655px; height: 60px; display: flex; align-items: center; gap: 30px; }
-#${ROOT_ID} .pl-currency { display: flex; flex-direction: column; align-items: center; gap: 3px; width: 40px; }
-#${ROOT_ID} .pl-currency-icon { width: 26px; height: 26px; background-size: contain; background-repeat: no-repeat; background-position: center; }
-#${ROOT_ID} .pl-currency-text { font-size: 12px; letter-spacing: 0.3px; color: #cdbe91; }
+#${ROOT_ID} .pl-footer { position: absolute; left: 3px; top: 562px; width: 400px; height: 63px; }
+#${ROOT_ID} .pl-footer::before { content: ""; position: absolute; left: 0; top: 0; width: 330px; height: 1px;
+  background: linear-gradient(90deg, rgba(120, 90, 40, 0.75), rgba(120, 90, 40, 0.1)); }
+#${ROOT_ID} .pl-help { position: absolute; left: 14px; top: 27px; width: 25px; height: 25px; cursor: pointer;
+  background: url("/fe/lol-loot/assets/flexible_crafter/button-crafter-tooltip.png") center / contain no-repeat; opacity: 0.85; }
+#${ROOT_ID} .pl-help:hover { opacity: 1; }
+#${ROOT_ID} .pl-store { position: absolute; left: 70px; top: 21px; width: 72px; height: 38px; cursor: pointer;
+  background: url("/fe/lol-loot/assets/purchase_buttons/chest_generic.png") center / contain no-repeat; }
+#${ROOT_ID} .pl-currencies { position: absolute; left: 0; top: 0; width: 400px; height: 63px; pointer-events: none; }
+#${ROOT_ID} .pl-currency { position: absolute; top: 16px; width: 40px; text-align: center; }
+#${ROOT_ID} .pl-currency-icon { width: 26px; height: 26px; margin: 0 auto; background-size: contain;
+  background-repeat: no-repeat; background-position: center; }
+#${ROOT_ID} .pl-currency-text { margin-top: 5px; font-family: "LoL Display", "Times New Roman", Times, serif;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.9px; color: #a09b8c; }
 #${ROOT_ID} .pl-empty { padding: 18px 2px; font-size: 12px; color: #a09b8c; }
-#${ROOT_ID} .pl-tip { position: fixed; z-index: 5; max-width: 260px; padding: 8px 10px; display: none;
-  background: rgba(1, 10, 19, 0.97); border: 1px solid #785a28; pointer-events: none;
-  font-size: 12px; line-height: 1.5; color: #a09b8c; }
-#${ROOT_ID} .pl-tip b { display: block; color: #f0e6d2; font-family: "LoL Display", "Times New Roman", Times, serif;
-  font-size: 12px; letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 3px; }
-#${ROOT_ID} .pl-tip-value { color: #c8aa6e; }
+#${ROOT_ID} .pl-tip { position: fixed; z-index: 5; display: none; width: 300px; box-sizing: border-box;
+  background: #010a13; border: 1px solid #785a28; box-shadow: 0 0 18px rgba(0, 0, 0, 0.75); pointer-events: none;
+  font-family: "LoL Body", Arial, sans-serif; font-size: 12px; line-height: 16px; letter-spacing: 0.3px; color: #a09b8c; }
+#${ROOT_ID} .pl-tip-tag { position: absolute; top: -11px; left: 50%; transform: translateX(-50%); z-index: 2; height: 20px;
+  padding: 0 12px; display: none; align-items: center; background: #010a13; border: 1px solid #785a28;
+  font-family: "LoL Display", "Times New Roman", Times, serif; font-size: 11px; letter-spacing: 0.8px;
+  text-transform: uppercase; color: #a09b8c; white-space: nowrap; }
+#${ROOT_ID} .pl-tip--tag .pl-tip-tag { display: flex; }
+#${ROOT_ID} .pl-tip-art { position: relative; height: 150px; background-size: cover; background-position: center;
+  background-color: #0a1428; border-bottom: 1px solid #785a28; }
+#${ROOT_ID} .pl-tip-art::after { content: ""; position: absolute; inset: 0;
+  background: linear-gradient(180deg, rgba(1, 10, 19, 0) 60%, rgba(1, 10, 19, 0.75) 100%); }
+#${ROOT_ID} .pl-tip-head { padding: 8px 16px 9px; }
+#${ROOT_ID} .pl-tip-name { font-family: "LoL Display", "Times New Roman", Times, serif; font-size: 14px;
+  font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #c8aa6e; }
+#${ROOT_ID} .pl-tip-value-row { display: flex; align-items: center; gap: 6px; margin-top: 3px; color: #a09b8c; }
+#${ROOT_ID} .pl-tip-value-row img { width: 14px; height: 14px; }
+#${ROOT_ID} .pl-tip-meta { margin-top: 5px; padding-top: 5px; border-top: 1px solid rgba(120, 90, 40, 0.35);
+  font-size: 11px; color: #a09b8c; }
+#${ROOT_ID} .pl-tip-meta img { width: 12px; height: 12px; margin-right: 5px; vertical-align: -2px; }
+#${ROOT_ID} .pl-tip-body { border-top: 1px solid #1e2328; padding: 8px 16px 9px; }
+#${ROOT_ID} .pl-tip-line { display: flex; align-items: center; justify-content: space-between; min-height: 22px; }
+#${ROOT_ID} .pl-tip-line-name { color: #a09b8c; }
+#${ROOT_ID} .pl-tip-line-value { display: flex; align-items: center; gap: 6px; color: #a09b8c; }
+#${ROOT_ID} .pl-tip-line-value img { width: 14px; height: 14px; }
 #${ROOT_ID} .pl-modal { position: absolute; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center;
   background: rgba(1, 10, 19, 0.72); }
 #${ROOT_ID} .pl-modal-box { width: 430px; box-sizing: border-box; padding: 22px 26px; background: #010a13;
@@ -158,6 +235,7 @@ let searchTimer = null;
 let selectedId = null;
 let filter = null;
 let sortMode = "alphabetical";
+let sortOpen = false;
 let items = [];
 let currencies = [];
 let actions = [];
@@ -185,6 +263,8 @@ function metaOf(item) {
   return parts.join(" · ");
 }
 
+const RARITY_RANK = { MYTHIC: 6, LEGENDARY: 5, EPIC: 4, RARE: 3, UNCOMMON: 2, COMMON: 1 };
+
 function groupItems(list) {
   const groups = new Map();
   for (const item of list) {
@@ -192,9 +272,13 @@ function groupItems(list) {
     if (!groups.has(category)) groups.set(category, []);
     groups.get(category).push(item);
   }
-  for (const [category, group] of groups) {
-    group.sort((a, b) => (sortMode === "value" ? (b.value ?? 0) - (a.value ?? 0) : nameOf(a).localeCompare(nameOf(b))));
-  }
+  const compare = (a, b) => {
+    if (sortMode === "value") return (b.value ?? 0) - (a.value ?? 0);
+    if (sortMode === "rarity") return (RARITY_RANK[String(b.rarity ?? "").toUpperCase()] ?? 0) - (RARITY_RANK[String(a.rarity ?? "").toUpperCase()] ?? 0) || nameOf(a).localeCompare(nameOf(b));
+    if (sortMode === "champion") return String(a.itemDesc ?? "").localeCompare(String(b.itemDesc ?? "")) || nameOf(a).localeCompare(nameOf(b));
+    return nameOf(a).localeCompare(nameOf(b));
+  };
+  for (const [, group] of groups) group.sort(compare);
   const ordered = [];
   for (const category of ORDER) {
     if (groups.has(category)) {
@@ -274,16 +358,8 @@ function flush(queue) {
 }
 
 function renderSubNav() {
-  const host = root?.querySelector(".pl-subnav");
-  if (!host) return;
-  host.textContent = "";
-  for (const [label, target] of SUB_TABS) {
-    const tab = document.createElement("div");
-    tab.className = target ? "pl-subnav-item" : "pl-subnav-item pl-subnav-item--on";
-    tab.dataset.subtab = label;
-    tab.textContent = label;
-    host.append(tab);
-  }
+  // The sub-nav is static markup: Crafting is the page this view renders and the
+  // other two hand off to Riot's own tabs.
 }
 
 function renderTabs() {
@@ -300,15 +376,16 @@ function renderTabs() {
 }
 
 function renderFooter() {
-  const host = root?.querySelector(".pl-footer");
+  const host = root?.querySelector(".pl-currencies");
   if (!host) return;
   host.textContent = "";
-  for (const currency of currencies) {
+  currencies.forEach((currency, index) => {
     const cell = document.createElement("div");
     cell.className = "pl-currency";
+    cell.style.left = `${181 + index * 70}px`;
     cell.innerHTML = `<div class="pl-currency-icon" style="background-image:url('${ASSETS.currency(currency.icon)}')"></div><div class="pl-currency-text">${esc(currency.count)}</div>`;
     host.append(cell);
-  }
+  });
 }
 
 function actionLabel(action) {
@@ -371,7 +448,7 @@ function renderGrid() {
     section.className = "pl-section";
     const title = document.createElement("div");
     title.className = "pl-section-title";
-    title.innerHTML = `${esc(TITLES[category] ?? category)}<hr>`;
+    title.innerHTML = `<div class="pl-section-text">${esc(TITLES[category] ?? category)}</div><hr>`;
     const tiles = document.createElement("div");
     tiles.className = "pl-tiles";
     section.append(title, tiles);
@@ -386,13 +463,30 @@ function renderGrid() {
 }
 
 function deriveCurrencies(loot) {
-  const out = [];
-  for (const id of CURRENCIES) {
-    const entry = loot.find((item) => item.lootId === id);
-    if (!entry) continue;
-    out.push({ icon: id === "MATERIAL_key" ? "MATERIAL_key" : id, count: entry.count ?? 0 });
+  return CURRENCIES.map(([id, icon]) => ({
+    icon,
+    count: loot.find((item) => item.lootId === id)?.count ?? 0,
+  }));
+}
+
+function renderSort() {
+  const host = root?.querySelector(".pl-sort");
+  if (!host) return;
+  const label = SORT_OPTIONS.find(([id]) => id === sortMode)?.[1] ?? "Alphabetical";
+  const value = host.querySelector(".pl-sort-value");
+  if (value) value.textContent = label;
+  host.classList.toggle("pl-sort--open", sortOpen);
+  const menu = host.querySelector(".pl-sort-menu");
+  if (!menu) return;
+  menu.textContent = "";
+  for (const [id, text] of SORT_OPTIONS) {
+    const option = document.createElement("div");
+    option.className = id === sortMode ? "pl-sort-option pl-sort-option--on" : "pl-sort-option";
+    option.dataset.sort = id;
+    option.setAttribute("role", "option");
+    option.textContent = text;
+    menu.append(option);
   }
-  return out;
 }
 
 function scheduleRefresh() {
@@ -419,10 +513,11 @@ async function refresh() {
   if (!Array.isArray(loot)) throw new Error("unexpected loot payload");
   items = loot.filter((item) => item.type !== "CURRENCY" && item.type !== "MATERIAL");
   currencies = deriveCurrencies(loot);
-  if (!items.some((item) => item.lootId === selectedId)) selectedId = items[0]?.lootId ?? null;
+  if (selectedId && !items.some((item) => item.lootId === selectedId)) selectedId = null;
   await loadActions(selectedId);
   renderSubNav();
   renderTabs();
+  renderSort();
   renderFooter();
   renderGrid();
   renderDetail();
@@ -486,23 +581,35 @@ function open() {
         ? '<video class="pl-backdrop" src="/fe/lol-loot/assets/videos/background_ambient.webm" autoplay muted loop playsinline></video>'
         : '<div class="pl-backdrop pl-backdrop--static"></div>'}
       <div class="pl-veil"></div>
-      <div class="pl-subnav"></div>
+      <div class="pl-subnav">
+        <div class="pl-subnav-item pl-subnav-item--on" data-subtab="CRAFTING" style="left:0">Crafting</div>
+        <div class="pl-subnav-sep"></div>
+        <div class="pl-subnav-item" data-subtab="THE SANCTUM" style="left:131px">The Sanctum</div>
+        <div class="pl-subnav-item" data-subtab="MYTHIC SHOP" style="left:250px">Mythic Shop</div>
+      </div>
       <div class="pl-tabs"></div>
       <div class="pl-tools">
         <input class="pl-search" type="search" placeholder="Search" aria-label="Search loot">
-        <select class="pl-sort" aria-label="Sort loot">
-          <option value="alphabetical">Alphabetical</option>
-          <option value="value">Value</option>
-        </select>
+        <button class="pl-clear" type="button" aria-label="Clear search"></button>
+        <div class="pl-sort" tabindex="0" role="button" aria-label="Sort loot" aria-haspopup="listbox">
+          <span class="pl-sort-value">Alphabetical</span>
+          <i class="pl-sort-caret"></i>
+          <div class="pl-sort-menu" role="listbox"></div>
+        </div>
       </div>
       <div class="pl-panel"><div class="pl-grid"></div></div>
       <div class="pl-detail"></div>
-      <div class="pl-footer"></div>
-      <div class="pl-tip"></div>`;
-    const navBottom = Math.max(0, ...[...document.querySelectorAll('[class*="lol-navigation"]')]
-      .filter((el) => el.getBoundingClientRect().width > 0)
-      .map((el) => Math.round(el.getBoundingClientRect().bottom)));
-    if (navBottom > 0 && navBottom < screenRoot.clientHeight) root.style.top = `${navBottom}px`;
+      <div class="pl-footer">
+        <div class="pl-help" title="How crafting works"></div>
+        <div class="pl-store" title="Loot store"></div>
+        <div class="pl-currencies"></div>
+      </div>
+      <div class="pl-tip">
+        <div class="pl-tip-tag"></div>
+        <div class="pl-tip-art"></div>
+        <div class="pl-tip-head"></div>
+        <div class="pl-tip-body"></div>
+      </div>`;
     screenRoot.append(root);
     const video = root.querySelector("video");
     if (video) {
@@ -511,6 +618,9 @@ function open() {
     }
     markActive();
     selectedId = null;
+    filter = null;
+    sortMode = "alphabetical";
+    sortOpen = false;
     observer = new IntersectionObserver(onIntersect, { rootMargin: "240px" });
     refresh().catch(fail);
     unsubscribe = api?.subscribe?.(LOOT_URI, scheduleRefresh) ?? null;
@@ -586,11 +696,9 @@ function onInput(event) {
   const target = event.target;
   if (!(target instanceof Element) || !root?.contains(target)) return;
   if (target.classList.contains("pl-search")) {
+    root.querySelector(".pl-clear")?.classList.toggle("pl-clear--on", target.value.length > 0);
     clearTimeout(searchTimer);
     searchTimer = setTimeout(renderGrid, 120);
-  } else if (target.classList.contains("pl-sort")) {
-    sortMode = target.value === "value" ? "value" : "alphabetical";
-    renderGrid();
   }
 }
 
@@ -604,6 +712,34 @@ function onClick(event) {
   }
   if (!root || !root.contains(target)) return;
 
+  const sortOption = target.closest(".pl-sort-option");
+  if (sortOption) {
+    sortMode = sortOption.dataset.sort ?? "alphabetical";
+    sortOpen = false;
+    renderSort();
+    renderGrid();
+    return;
+  }
+  const clearButton = target.closest(".pl-clear");
+  if (clearButton) {
+    const input = root.querySelector(".pl-search");
+    if (input) {
+      input.value = "";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.focus();
+    }
+    return;
+  }
+  const sort = target.closest(".pl-sort");
+  if (sort) {
+    sortOpen = !sortOpen;
+    renderSort();
+    return;
+  }
+  if (sortOpen) {
+    sortOpen = false;
+    renderSort();
+  }
   const modalButton = target.closest("[data-modal]");
   if (modalButton) {
     if (modalButton.dataset.modal === "confirm") runAction();
@@ -670,18 +806,54 @@ function onHover(event) {
   const item = items.find((entry) => entry.lootId === tile.dataset.id);
   if (!item) return;
   const rect = tile.getBoundingClientRect();
-  const disenchant = Number(item.disenchantValue) > 0 ? `<div>Dismantle into Essence <span class="pl-tip-value">+${esc(item.disenchantValue)}</span></div>` : "";
-  const upgrade = Number(item.upgradeEssenceValue) > 0 ? `<div>Upgrade into Permanent <span class="pl-tip-value">${esc(item.upgradeEssenceValue)}</span></div>` : "";
-  tip.innerHTML = `<b>${esc(nameOf(item) || item.lootId)}</b>${esc(metaOf(item))}${disenchant}${upgrade}`;
+  const tag = Number(item.upgradeEssenceValue) > 0 ? "Activatable" : "";
+  tip.classList.toggle("pl-tip--tag", Boolean(tag));
+  tip.querySelector(".pl-tip-tag").textContent = tag;
+  const art = imageOf(item);
+  tip.querySelector(".pl-tip-art").style.backgroundImage = art ? `url("${CSS_ESCAPE(art)}")` : "";
+  const essenceIcon = ASSETS.currency("CURRENCY_cosmetic");
+  const rarityLabel = String(item.rarity ?? "").replace(/^./, (char) => char.toUpperCase());
+  const lootId = String(item.lootId ?? "");
+  const typeLabel = /CHAMPION_SKIN/.test(lootId)
+    ? "Skin Shard"
+    : /WARD_SKIN/.test(lootId)
+      ? "Ward Skin"
+      : /SUMMONER_ICON/.test(lootId)
+        ? "Summoner Icon"
+        : /EMOTE/.test(lootId)
+          ? "Emote"
+          : /ETERNAL/.test(lootId)
+            ? "Eternal"
+            : /CHAMPION/.test(lootId)
+              ? "Champion Shard"
+              : TYPE_LABELS[String(item.type ?? "").replace(/_RENTAL$/, "")] ?? "";
+  const gem = RARITY_ICONS.has(String(item.rarity ?? "").toUpperCase()) ? `<img src="${ASSETS.rarity(item.rarity)}" alt="">` : "";
+  tip.querySelector(".pl-tip-head").innerHTML = `
+    <div class="pl-tip-name">${esc(nameOf(item) || item.lootId)}</div>
+    ${Number(item.value) > 0 ? `<div class="pl-tip-value-row"><img src="${esc(essenceIcon)}" alt=""><span>${esc(item.value)}</span></div>` : ""}
+    <div class="pl-tip-meta">${gem}${esc([rarityLabel, typeLabel].filter(Boolean).join(" "))}</div>`;
+  const rows = [];
+  if (Number(item.disenchantValue) > 0) {
+    rows.push(`<div class="pl-tip-line"><span class="pl-tip-line-name">Disenchant into Essence</span><span class="pl-tip-line-value"><img src="${esc(essenceIcon)}" alt="">+${esc(item.disenchantValue)}</span></div>`);
+  }
+  if (Number(item.upgradeEssenceValue) > 0) {
+    rows.push(`<div class="pl-tip-line"><span class="pl-tip-line-name">Upgrade into Permanent</span><span class="pl-tip-line-value"><img src="${esc(essenceIcon)}" alt="">-${esc(item.upgradeEssenceValue)}</span></div>`);
+  }
+  tip.querySelector(".pl-tip-body").innerHTML = rows.join("");
   tip.style.display = "block";
-  const width = tip.offsetWidth || 220;
-  const height = tip.offsetHeight || 60;
-  tip.style.left = `${Math.min(rect.right + 8, innerWidth - width - 8)}px`;
-  tip.style.top = `${Math.max(8, Math.min(rect.top, innerHeight - height - 8))}px`;
+  const width = tip.offsetWidth || 300;
+  const height = tip.offsetHeight || 270;
+  tip.style.left = `${Math.max(8, Math.min(rect.right + 15, innerWidth - width - 8))}px`;
+  tip.style.top = `${Math.max(8, Math.min(rect.top - 61, innerHeight - height - 8))}px`;
 }
 
 function onKey(event) {
   if (event.key !== "Escape" || !root) return;
+  if (sortOpen) {
+    sortOpen = false;
+    renderSort();
+    return;
+  }
   if (pendingAction) {
     pendingAction = null;
     root.querySelector(".pl-modal")?.remove();
@@ -714,38 +886,31 @@ function detachListeners() {
   window.removeEventListener("keydown", onKey, true);
 }
 
-function enable() {
+export function enable(utils) {
+  if (active) return;
   failed = false;
   passthrough = false;
-  api = window.PerfectionistUtils ?? null;
-  if (!api?.lcu || !isValidNav()) {
+  api = utils ?? window.PerfectionistUtils ?? null;
+  if (!api?.lcu || typeof api.addStyle !== "function" || !isValidNav()) {
     failed = true;
     return;
   }
   active = true;
-  styleRemover = api.addStyle(STYLE_ID, CSS);
-  attachListeners();
-  if (document.querySelector(".loot-application-container")) open();
+  try {
+    styleRemover = api.addStyle(STYLE_ID, CSS);
+    attachListeners();
+    if (document.querySelector(".loot-application-container")) open();
+  } catch (error) {
+    console.warn("[Pages Remake] Loot remake failed; the original page stays in place.", error);
+    disable();
+  }
 }
 
-function disable() {
+export function disable() {
   active = false;
   detachListeners();
   close();
   styleRemover?.();
   styleRemover = null;
-}
-
-export function init() {
-  const utils = window.PerfectionistUtils;
-  if (!utils) return;
-  utils.registerPlugin({
-    id: ID,
-    name: "Loot Remake",
-    description: "Replaces the Loot screen with a plain-DOM view of the same inventory, including craft, disenchant, reroll and upgrade with the same confirmations as the original.",
-    version,
-    defaultEnabled: false,
-    onEnable: enable,
-    onDisable: disable,
-  });
+  api = null;
 }

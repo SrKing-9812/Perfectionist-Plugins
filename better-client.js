@@ -1,5 +1,5 @@
 const PLUGIN_ID = "better-client";
-const version = "1.4.0";
+const version = "1.5.0";
 
 const MAX_CACHE_ENTRIES = 24;
 const MAX_CACHE_ENTRY_BYTES = 2 * 1024 * 1024;
@@ -61,7 +61,16 @@ const OPTIONS = [
     description: "Turns off background blur, decorative animation and looping background video to save GPU and CPU on weaker machines.",
     default: false,
   },
+  {
+    key: "pagesRemake",
+    label: "Pages Remake",
+    description:
+      "Replaces supported screens (Loot for now) with a plain-DOM view that skips Ember's per-element build. The remake code is only downloaded while this is on, and any failure puts Riot's original page back instantly.",
+    default: false,
+  },
 ];
+
+const PAGES_REMAKE_FILE = "loot-remake.js";
 
 let api = null;
 let active = false;
@@ -74,6 +83,9 @@ let phaseTimer = null;
 let phaseWatchListener = null;
 let performanceMode = false;
 let removePerformanceStyle = null;
+let pagesRemakeModule = null;
+let pagesRemakePending = null;
+let pagesRemakeWanted = false;
 let cacheBytes = 0;
 
 const cache = new Map();
@@ -640,6 +652,46 @@ function installNetwork(env) {
   };
 }
 
+function applyPagesRemake(on) {
+  pagesRemakeWanted = on === true;
+  if (!pagesRemakeWanted) {
+    try {
+      pagesRemakeModule?.disable();
+    } catch (error) {
+      console.warn("[BetterClient] Pages Remake did not shut down cleanly.", error);
+    }
+    return;
+  }
+  if (!active || !api) return;
+  if (pagesRemakeModule) {
+    try {
+      pagesRemakeModule.enable(api);
+    } catch (error) {
+      console.warn("[BetterClient] Pages Remake failed; the original pages stay in place.", error);
+    }
+    return;
+  }
+  if (pagesRemakePending) return;
+  const loader = api.loadPluginFile;
+  if (typeof loader !== "function") {
+    console.warn("[BetterClient] Pages Remake needs a newer core to load; the original pages stay in place.");
+    return;
+  }
+  pagesRemakePending = Promise.resolve()
+    .then(() => loader(PAGES_REMAKE_FILE))
+    .then((module) => {
+      pagesRemakeModule = module;
+      if (pagesRemakeWanted && active) module.enable(api);
+    })
+    .catch((error) => {
+      pagesRemakeModule = null;
+      console.warn("[BetterClient] Pages Remake could not load; the original pages stay in place.", error);
+    })
+    .finally(() => {
+      pagesRemakePending = null;
+    });
+}
+
 function onEnable(utils) {
   api = utils;
   active = true;
@@ -658,10 +710,12 @@ function onEnable(utils) {
   startPhaseWatch();
   performanceMode = api.getOption?.(PLUGIN_ID, "performanceMode") === true;
   applyPerformanceMode();
+  applyPagesRemake(api.getOption?.(PLUGIN_ID, "pagesRemake") === true);
   if (phase === "InProgress") startUngate();
 }
 
 function onDisable() {
+  applyPagesRemake(false);
   active = false;
   stopPhaseWatch();
   stopUngate();
@@ -690,9 +744,12 @@ function onDisable() {
 }
 
 function onOptionChange(key, value) {
-  if (key !== "performanceMode") return;
-  performanceMode = value === true;
-  applyPerformanceMode();
+  if (key === "performanceMode") {
+    performanceMode = value === true;
+    applyPerformanceMode();
+    return;
+  }
+  if (key === "pagesRemake") applyPagesRemake(value === true);
 }
 
 export function init() {

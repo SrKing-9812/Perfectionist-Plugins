@@ -90,6 +90,10 @@ Built for [Pengu Loader](https://pengu.lol)
       For weaker machines there is one optional switch, <b>Performance mode</b>, which drops background blur,
       decorative animation and looping background video. Leave it off and the client is pixel-identical.
       <br><br>
+      <b>Pages Remake</b> (off by default) replaces the Loot screen with a plain-DOM copy of the same inventory so
+      it opens without Ember's per-element build. Its code is only downloaded while the switch is on, and any
+      failure — or turning it off — puts Riot's original page back instantly.
+      <br><br>
       For memory creep, <code>tools/betterclient-monitor.mjs</code> logs per-process RAM and client phase to CSV and
       diffs heap snapshots.
     </td>
