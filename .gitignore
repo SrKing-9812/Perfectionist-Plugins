@@ -5,6 +5,7 @@ AGENTS.md
 .freebuff/
 
 # local debug / test artifacts
+tools/
 test-*
 debug-*
 *.test.*

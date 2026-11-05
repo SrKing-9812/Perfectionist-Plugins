@@ -99,6 +99,14 @@ Built for [Pengu Loader](https://pengu.lol)
 2. Move the `Perfectionism` folder into your Pengu Loader `plugins` folder.
 3. Restart the League Client.
 
+### Test a local build without npm
+
+Unzip `Perfectionism-folder-install.zip`, then move the `Perfectionism` folder it
+contains into Pengu Loader's `plugins` folder and restart the client. That folder
+carries the plugin files themselves and loads them locally, so no CDN version is
+needed. Do not keep it next to the normal loader folder at the same time — Pengu
+would load the suite twice.
+
 That's it. The folder holds one tiny loader file. The plugins themselves come from the
 [`perfectionist-plugins`](https://www.npmjs.com/package/perfectionist-plugins) npm package the
 first time the client starts. Install, remove and toggle plugins in **Settings → Perfectionism**.

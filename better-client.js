@@ -23,6 +23,8 @@ const CHAMP_SELECT_RETRY_MS = [120, 260, 520];
 const STATIC_ENDPOINTS = [
   ["/lol-game-data/assets/", 60 * 60 * 1000],
   ["/lol-perks/v1/perks", 60 * 60 * 1000],
+  ["/riotclient/region-locale", 60 * 1000],
+  ["/lol-summoner/v1/current-summoner", 10 * 1000],
   ["/performance/v1/quickstats", 5000],
 ];
 
