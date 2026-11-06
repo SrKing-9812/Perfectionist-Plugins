@@ -103,32 +103,12 @@ Built for [Pengu Loader](https://pengu.lol)
 2. Move the `Perfectionism` folder into your Pengu Loader `plugins` folder.
 3. Restart the League Client.
 
-### Test a local build without npm
-
-Unzip `Perfectionism-folder-install.zip`, then move the `Perfectionism` folder it
-contains into Pengu Loader's `plugins` folder and restart the client. That folder
-carries the plugin files themselves and loads them locally, so no CDN version is
-needed. Do not keep it next to the normal loader folder at the same time — Pengu
-would load the suite twice.
-
-That's it. The folder holds one tiny loader file. The plugins themselves come from the
-[`perfectionist-plugins`](https://www.npmjs.com/package/perfectionist-plugins) npm package the
-first time the client starts. Install, remove and toggle plugins in **Settings → Perfectionism**.
-
 ## Updates
 
 Every time the client starts, the loader checks npm for a newer version and runs it. Publishing
 a new version of the npm package **is** the update. If a new version appears while the client is
 already open, the suite downloads it with a progress window and restarts the client at a safe
 moment (never in the middle of a game). You never replace files by hand.
-
-### Diagnostics (optional)
-
-Open **Settings → Perfectionism → BetterClient**, enable **Diagnostics**, use the
-client normally, then press **Copy report**. It records long tasks, screen settle
-times, request counts and heap samples in memory only. It is off by default and
-sends nothing over the network; the report has no account, summoner, token or LCU
-data.
 
 <br>
 

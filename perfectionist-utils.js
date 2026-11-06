@@ -1,6 +1,5 @@
 const READY_EVENT = "perfectionist:utils-ready";
 const STATE_KEY = "perfectionist-plugins:state";
-const CACHE_KEY = "perfectionist-plugins:cache";
 const NAV_ID = "perfectionist-plugins-nav";
 const PANEL_ID = "perfectionist-plugins-panel";
 const STYLE_ID = "perfectionist-plugins-style";
@@ -10,13 +9,11 @@ export const version = "2.4.0";
 
 const PKG = "perfectionist-plugins";
 const CDN = "https://cdn.jsdelivr.net/npm";
-const REGISTRY_URL = `https://registry.npmjs.org/${PKG}/latest`;
-const CORE_FILE = "perfectionist-utils.js";
 
 const BUNDLED_MODULES = [
   {
     id: "perfectionist-utils",
-    file: CORE_FILE,
+    file: "perfectionist-utils.js",
     name: "Perfectionism Core",
     version,
     description: "Shared core for the Perfectionism plugins.",
@@ -127,10 +124,6 @@ const STYLE_CSS = `
 #${PANEL_ID} .perf-chip:hover { color: #f0e6d2; border-color: #c89b3c; }
 #${PANEL_ID} .perf-chip--on { color: #010a13; background: #c89b3c; border-color: #c89b3c; }
 #${PANEL_ID} .perf-chip--on:hover { background: #f0e6d2; }
-#${PANEL_ID} .perf-info { margin-top: 11px; padding-top: 8px; border-top: 1px solid rgba(120, 90, 40, 0.35); }
-#${PANEL_ID} .perf-info-line { font-size: 10px; line-height: 16px; letter-spacing: 0.2px; color: #a09b8c;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
 #${PANEL_ID} .perf-tools { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; margin-bottom: 14px; }
 #${PANEL_ID} .perf-search { flex: 1 1 auto; min-width: 0; box-sizing: border-box;
   font-family: "LoL Body", Arial, "Helvetica Neue", Helvetica, sans-serif; font-size: 12px; letter-spacing: 0.3px;
@@ -145,18 +138,6 @@ const STYLE_CSS = `
 #${PANEL_ID} .perf-chip:disabled { opacity: 0.45; cursor: default; }
 #${PANEL_ID} .perf-chip:disabled:hover { color: #a09b8c; border-color: #785a28; background: #0a1428; }
 #${PANEL_ID} .perf-chip--on:disabled:hover { color: #010a13; border-color: #c89b3c; background: #c89b3c; }
-
-.perf-update { position: fixed; inset: 0; z-index: 100000; display: flex; align-items: center;
-  justify-content: center; background: rgba(1, 10, 19, 0.72); }
-.perf-update-box { width: 430px; box-sizing: border-box; padding: 22px 26px;
-  background: #010a13; border: 1px solid #785a28; box-shadow: 0 0 32px rgba(0, 0, 0, 0.8); }
-.perf-update-title { font-family: "LoL Display", "Times New Roman", Times, Baskerville, Georgia, serif;
-  font-size: 15px; font-weight: 700; letter-spacing: 1.05px; text-transform: uppercase; color: #f0e6d2; }
-.perf-update-status { font-family: "LoL Body", Arial, sans-serif; font-size: 12px; letter-spacing: 0.3px;
-  color: #a09b8c; margin-top: 12px; line-height: 1.5; }
-.perf-update-track { height: 6px; margin-top: 16px; background: #0a1428; border: 1px solid #785a28; }
-.perf-update-fill { height: 100%; width: 0; background: #c89b3c; transition: width 0.25s; }
-.perf-update-close { margin-top: 18px; }
 `;
 
 const registry = new Map();
@@ -170,8 +151,10 @@ let coords = null;
 const resolved = new Map();
 let availableModules = BUNDLED_MODULES;
 let pendingReload = false;
+let modulesLoaded = false;
 let searchQuery = "";
 let runningVersion = version;
+let coreStarted = false;
 
 let state = { installed: {}, enabled: {}, options: {}, masterLocked: false };
 
@@ -322,34 +305,12 @@ function isInstalled(mod) {
   return installed === undefined ? registry.has(mod.id) : Boolean(installed);
 }
 
-function newerVersion(a, b) {
-  const pa = String(a ?? "0")
-    .split(".")
-    .map(Number);
-  const pb = String(b ?? "0")
-    .split(".")
-    .map(Number);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const diff = (pa[i] || 0) - (pb[i] || 0);
-    if (diff !== 0) return diff > 0;
-  }
-  return false;
-}
-
 function moduleUrl(file) {
   return `${CDN}/${PKG}@${runningVersion}/${file}`;
 }
 
 function importModule(url) {
   return coords?.importModule ? coords.importModule(url) : import(url);
-}
-
-// Lets a feature module (BetterClient → Pages Remake) pull its code only when enabled.
-// A local override keeps the dev harness on freshly edited files instead of the CDN copy.
-function loadPluginFile(file) {
-  const local = typeof window !== "undefined" ? window.PerfectionistLocalBase : null;
-  const url = local ? new URL(file, local).href : moduleUrl(file);
-  return importModule(url);
 }
 
 async function installModule(mod) {
@@ -368,105 +329,14 @@ async function uninstallModule(mod) {
   refreshPanel();
 }
 
-const SAFE_PHASES = new Set(["None", "Lobby", "EndOfGame"]);
-
 function reloadClientNow() {
   if (typeof window.reloadClient === "function") window.reloadClient();
   else window.location.reload();
 }
 
-async function reloadWhenSafe() {
-  for (;;) {
-    let phase = null;
-    try {
-      phase = await apiGet("/lol-gameflow/v1/gameflow-phase");
-    } catch {
-      phase = null;
-    }
-    if (phase == null || SAFE_PHASES.has(phase)) break;
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-  }
-  reloadClientNow();
-}
-
-function apiGet(path) {
-  return fetch(path, { headers: { Accept: "application/json" } }).then((response) => {
-    if (!response.ok) throw new Error(`${path} responded ${response.status}`);
-    return response.status === 204 ? null : response.json();
-  });
-}
-
-function buildUpdateWindow() {
-  const root = el("div", "perf-update");
-  const box = el("div", "perf-update-box");
-  box.append(el("div", "perf-update-title", "Installing Update"));
-  const status = el("div", "perf-update-status", "Downloading...");
-  const track = el("div", "perf-update-track");
-  const fill = el("div", "perf-update-fill");
-  track.append(fill);
-  box.append(status, track);
-  root.append(box);
-  return {
-    root,
-    setStatus: (text) => {
-      status.textContent = text;
-    },
-    setProgress: (fraction) => {
-      fill.style.width = `${Math.round(Math.max(0, Math.min(1, fraction)) * 100)}%`;
-    },
-    fail: (text) => {
-      status.textContent = text;
-      const close = el("button", "perf-btn perf-update-close", "Close");
-      close.addEventListener("click", () => root.remove());
-      box.append(close);
-    },
-  };
-}
-
-async function runUpdate(target) {
-  const win = buildUpdateWindow();
-  (document.body ?? document.documentElement).append(win.root);
-  const files = [{ name: "Perfectionism Core", file: CORE_FILE }, ...BUNDLED_MODULES.filter((m) => !m.core)];
-  const sources = {};
-  for (let i = 0; i < files.length; i++) {
-    win.setStatus(`Downloading ${files[i].name}...`);
-    win.setProgress(i / files.length);
-    try {
-      const response = await fetch(`${CDN}/${PKG}@${target}/${files[i].file}`);
-      if (response.status === 404 && files[i].id) continue;
-      if (!response.ok) throw new Error(`download failed (${response.status})`);
-      const text = await response.text();
-      if (!text || !/export/.test(text)) throw new Error("the downloaded file looks invalid");
-      if (files[i].id) sources[files[i].id] = text;
-    } catch (error) {
-      logError(`could not update to ${target}.`, error);
-      win.fail(`Could not update to ${target}. It will be retried on the next client start.`);
-      return;
-    }
-  }
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({ version: target, files: sources }));
-  } catch {}
-  win.setProgress(1);
-  runningVersion = target;
-  saveState();
-  win.setStatus("Update installed. Restarting the client...");
-  reloadWhenSafe();
-}
-
-async function checkForUpdates() {
-  if (!/^\d+\.\d+\.\d+$/.test(runningVersion)) return;
-  let target = null;
-  try {
-    const response = await fetch(REGISTRY_URL, { headers: { Accept: "application/json" }, cache: "no-store" });
-    if (response.ok) target = (await response.json())?.version ?? null;
-  } catch {
-    return;
-  }
-  if (target && newerVersion(target, runningVersion)) runUpdate(target);
-}
-
 async function loadModules() {
+  if (modulesLoaded) return;
+  modulesLoaded = true;
   for (const mod of BUNDLED_MODULES) {
     if (mod.core || resolved.has(mod.id) || registry.has(mod.id) || !isInstalled(mod)) continue;
     try {
@@ -647,17 +517,6 @@ function buildOptionRow(mod, option, disabled, onChange) {
   return row;
 }
 
-function buildInfo(option) {
-  const block = el("div", "perf-info");
-  if (option.label) block.append(el("div", "perf-chips-label", option.label));
-  let lines = [];
-  try {
-    lines = option.lines?.() ?? [];
-  } catch {}
-  for (const line of lines) block.append(el("div", "perf-info-line", String(line)));
-  return block;
-}
-
 function buildChips(mod, option, locked) {
   const block = el("div", "perf-chip-block");
   block.title = option.description ?? "";
@@ -680,28 +539,6 @@ function buildChips(mod, option, locked) {
   return block;
 }
 
-function buildAction(option, locked) {
-  const button = el("button", "perf-btn", option.label);
-  button.type = "button";
-  button.title = option.description ?? "";
-  button.disabled = Boolean(locked);
-  button.addEventListener("click", async () => {
-    const original = button.textContent;
-    button.disabled = true;
-    try {
-      await option.onClick?.();
-      button.textContent = "Copied";
-    } catch {
-      button.textContent = "Copy failed";
-    }
-    setTimeout(() => {
-      button.textContent = original;
-      button.disabled = Boolean(locked);
-    }, 1600);
-  });
-  return button;
-}
-
 function buildOptions(mod, locked) {
   const options = registry.get(mod.id)?.options ?? [];
   if (options.length === 0) return null;
@@ -709,14 +546,6 @@ function buildOptions(mod, locked) {
   for (const option of options) {
     if (option.type === "chips") {
       wrap.append(buildChips(mod, option, locked));
-      continue;
-    }
-    if (option.type === "info") {
-      wrap.append(buildInfo(option));
-      continue;
-    }
-    if (option.type === "action") {
-      wrap.append(buildAction(option, locked));
       continue;
     }
     if (!option.children?.length) {
@@ -1072,8 +901,6 @@ const utils = {
   getAvailableModules,
   installModule,
   uninstallModule,
-  loadPluginFile,
-  checkForUpdates,
   watch,
   waitFor,
   addStyle,
@@ -1083,7 +910,8 @@ const utils = {
 };
 
 export async function init(context, coordsProvided) {
-  if (window.PerfectionistUtils) return;
+  if (coreStarted || window.PerfectionistUtils) return;
+  coreStarted = true;
   coords = coordsProvided ?? null;
   runningVersion = coords?.version || version;
 
@@ -1097,7 +925,6 @@ export async function init(context, coordsProvided) {
 
   try {
     await loadModules();
-    checkForUpdates();
   } catch (error) {
     logError("startup failed.", error);
   }
