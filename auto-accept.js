@@ -1,19 +1,16 @@
 const PLUGIN_ID = "auto-accept";
-export const version = "1.1.2";
+export const version = "1.1.3";
 
 const PHASE_URI = "/lol-gameflow/v1/gameflow-phase";
 const READY_CHECK_URI = "/lol-matchmaking/v1/ready-check";
 const ACCEPT_URI = "/lol-matchmaking/v1/ready-check/accept";
 const ACCEPT_KEY = "autoAccept";
-const DELAY_KEY = "perfectionist:auto-accept:delay";
-const MAX_DELAY = 15000;
 const RETRY_MS = 700;
 const MAX_ATTEMPTS = 4;
 const GAME_SELECT_GUARD_MS = 1500;
 const STYLE_ID = "perf-auto-accept-style";
 const ROOT_ID = "perfAutoAccept";
 const TOGGLE_ID = "perfAutoAcceptToggle";
-const DELAY_INPUT_ID = "perfAutoAcceptDelay";
 
 const CSS = `#perfAutoAccept {
   display: flex !important; flex-direction: row !important; flex-wrap: nowrap !important;
@@ -25,24 +22,7 @@ const CSS = `#perfAutoAccept {
   font-family: var(--font-body, "LoL Body", Arial, sans-serif) !important;
   font-size: 12px !important; letter-spacing: 0.3px !important; color: #a09b8c !important;
 }
-#perfAutoAccept .auto-accept-button[selected] .auto-accept-button-text { color: #f0e6d2 !important; }
-#perfAutoAccept .auto-accept-delay {
-  display: flex !important; align-items: center !important; box-sizing: border-box !important;
-  width: 82px !important; height: 24px !important; margin-left: 0 !important;
-  background: #1e2328 !important; border: 1px solid #785a28 !important; border-radius: 0 !important;
-  transition: border-color 0.15s ease, background-color 0.15s ease !important;
-}
-#perfAutoAccept .auto-accept-delay:hover { border-color: #c89b3c !important; }
-#perfAutoAccept .auto-accept-delay:focus-within { border-color: #c89b3c !important; background: #0a1428 !important; }
-#perfAutoAccept .auto-accept-delay input {
-  width: 100% !important; height: 100% !important; box-sizing: border-box !important;
-  background: transparent !important; border: none !important; outline: none !important; box-shadow: none !important;
-  color: #f0e6d2 !important; font-family: var(--font-body, "LoL Body", Arial, sans-serif) !important;
-  font-size: 12px !important; letter-spacing: 0.3px !important; text-align: center !important; padding: 0 6px !important;
-}
-#perfAutoAccept .auto-accept-delay input::placeholder { color: #5b5a56 !important; }
-#perfAutoAccept .auto-accept-delay input::-webkit-outer-spin-button,
-#perfAutoAccept .auto-accept-delay input::-webkit-inner-spin-button { -webkit-appearance: none !important; margin: 0 !important; }`;
+#perfAutoAccept .auto-accept-button[selected] .auto-accept-button-text { color: #f0e6d2 !important; }`;
 
 let api = null;
 let active = false;
@@ -54,24 +34,6 @@ let unsubscribes = [];
 let removeStyle = null;
 let domObserver = null;
 let domTimer = null;
-let delayValue = readDelay();
-
-function readDelay() {
-  try {
-    const raw = Number(localStorage.getItem(DELAY_KEY));
-    if (!Number.isFinite(raw) || raw < 0) return 0;
-    return Math.min(Math.floor(raw), MAX_DELAY);
-  } catch {
-    return 0;
-  }
-}
-
-function writeDelay(value) {
-  delayValue = value;
-  try {
-    localStorage.setItem(DELAY_KEY, String(value));
-  } catch {}
-}
 
 function enabled() {
   try {
@@ -139,17 +101,11 @@ async function acceptNow() {
   }
 }
 
-function queueAccept() {
-  if (!active || !enabled() || accepted || sending || timer) return;
-  if (delayValue > 0) timer = setTimeout(acceptNow, delayValue);
-  else acceptNow();
-}
-
 function onPhase(raw) {
   const phase = unwrap(raw);
   if (typeof phase !== "string") return;
   if (phase === "ReadyCheck") {
-    if (!accepted) queueAccept();
+    if (!accepted) acceptNow();
     return;
   }
   resetReadyCheck();
@@ -167,13 +123,13 @@ function onReadyCheck(raw) {
     resetReadyCheck();
     return;
   }
-  queueAccept();
+  acceptNow();
 }
 
 async function refresh() {
   const phase = unwrap(await api.lcu.get(PHASE_URI).catch(() => null));
   if (!active) return;
-  if (phase === "ReadyCheck") queueAccept();
+  if (phase === "ReadyCheck") acceptNow();
   else resetReadyCheck();
 }
 
@@ -182,8 +138,6 @@ function syncButton() {
   if (!option) return;
   if (enabled()) option.setAttribute("selected", "true");
   else option.removeAttribute("selected");
-  const field = document.getElementById(DELAY_INPUT_ID);
-  if (field && document.activeElement !== field) field.value = String(delayValue);
 }
 
 function toggle() {
@@ -192,19 +146,8 @@ function toggle() {
     api.setOption(PLUGIN_ID, ACCEPT_KEY, next, false);
   } catch {}
   syncButton();
-  if (next) queueAccept();
+  if (next) acceptNow();
   else resetReadyCheck();
-}
-
-function onDelayInput(event) {
-  const raw = Number(event.target.value);
-  const next = Math.min(Math.max(Number.isFinite(raw) ? Math.floor(raw) : 0, 0), MAX_DELAY);
-  writeDelay(next);
-  if (event.type === "change") event.target.value = String(next);
-  if (active && enabled() && timer) {
-    clearTimer();
-    queueAccept();
-  }
 }
 
 function buildButton() {
@@ -224,23 +167,7 @@ function buildButton() {
     toggle();
   });
 
-  const input = document.createElement("lol-uikit-flat-input");
-  input.className = "auto-accept-delay";
-  const field = document.createElement("input");
-  field.id = DELAY_INPUT_ID;
-  field.type = "number";
-  field.min = "0";
-  field.max = String(MAX_DELAY);
-  field.step = "100";
-  field.placeholder = "ms";
-  field.title = "Delay before accepting, in milliseconds";
-  field.value = String(delayValue);
-  field.addEventListener("input", onDelayInput);
-  field.addEventListener("change", onDelayInput);
-  field.addEventListener("click", (event) => event.stopPropagation());
-  input.append(field);
-
-  root.append(option, input);
+  root.append(option);
   return root;
 }
 
@@ -351,7 +278,7 @@ export function init() {
       id: PLUGIN_ID,
       name: "Auto Accept",
       description:
-        "Accepts the ready check automatically, with an optional delay. Use the Auto Accept switch in the lobby footer to turn it on or off.",
+        "Accepts the ready check automatically. Use the Auto Accept switch in the lobby footer to turn it on or off.",
       version,
       onEnable,
       onDisable,

@@ -22,8 +22,8 @@ Built for [Pengu Loader](https://pengu.lol)
 | 🛡️ **Ban Blocker** | Adds a **BLOCK** button to your teammates in champ select. While a teammate is blocked, the champion they are about to ban is prepicked for you on your own pick turn, so their ban can never land on it. |
 | 🔓 **Unlock Profile Skins** | In the **Set profile background** window, every skin shows as unlocked, even event skins (Signature). Browse the full list and pick any skin you like. |
 | 🎨 **Hide Unowned Skins** | In champ select, the skin carousel only shows the skins you own for the champion you picked. The arrows and dots only move through owned skins, and the ones that are left keep their normal spacing. |
-| ✅ **Auto Accept** | Accepts the match for you when the ready check pops up. Add an optional delay, and switch it on or off from the lobby footer. |
-| 🚪 **Dodge Helper** | Adds a button to leave champ select: **DODGE** in ranked Solo/Duo and Flex, with the estimated LP you will lose, and **QUIT** in every other mode. |
+| ✅ **Auto Accept** | Accepts the match for you when the ready check pops up. |
+| 🚪 **Dodge Helper** | Adds a **DODGE** button in ranked Solo/Duo and Flex and a **QUIT** button in other modes, with the LP and queue-penalty cost of the next dodge. |
 | 🎁 **Auto Claimer** | Claims rewards for you the moment they become claimable: event tracks, missions and the TFT Battle Pass. Three optional extras: auto-buy shop items Riot lists for 1 BE, auto-open mystery loot (icons, ward skins), and auto-open chests with keys. |
 | 📬 **Auto Read** | Marks quests, loot, Clash, TFT and client notices as read, so no badge or dot stays lit. |
 
