@@ -5,7 +5,7 @@ const PANEL_ID = "perfectionist-plugins-panel";
 const STYLE_ID = "perfectionist-plugins-style";
 const TAB_TITLE = "Perfectionism";
 
-export const version = "2.4.0";
+export const version = "2.4.6";
 
 const PKG = "perfectionist-plugins";
 const CDN = "https://cdn.jsdelivr.net/npm";
@@ -30,7 +30,7 @@ const BUNDLED_MODULES = [
     id: "ban-blocker",
     file: "ban-blocker.js",
     name: "Ban Blocker",
-    version: "3.6.0",
+    version: "3.6.2",
     description: "Adds a BLOCK button to your teammates in champ select. While a teammate is blocked, the champion they are about to ban is prepicked for you, so their ban can never land on it.",
   },
   {
@@ -44,7 +44,7 @@ const BUNDLED_MODULES = [
     id: "hide-unowned-skins",
     file: "hide-unowned-skins.js",
     name: "Hide Unowned Skins",
-    version: "2.5.1",
+    version: "2.4.3",
     description: "In champ select, the skin carousel only shows the skins you own for the champion you picked.",
   },
   {
@@ -849,10 +849,23 @@ function refreshPanel() {
   requestAnimationFrame(() => applyScrollTop(next, top));
 }
 
+function settingsNavScope() {
+  const title =
+    document.querySelector(".lol-settings-nav-title:not([data-perfectionist])") ??
+    document.querySelector(".lol-settings-nav-title");
+  return title?.closest("lol-uikit-scrollable") ?? title?.parentElement ?? null;
+}
+
+function navItems() {
+  const scope = settingsNavScope();
+  if (!scope) return [];
+  return [...scope.querySelectorAll('lol-uikit-navigation-item, [class*="settings-nav"]')];
+}
+
 function setNavActive(activeNav) {
-  for (const nav of document.querySelectorAll(".lol-settings-nav")) {
+  for (const nav of navItems()) {
     if (nav === activeNav) {
-      nav.setAttribute("active", "true");
+      if (nav.getAttribute("active") !== "true") nav.setAttribute("active", "true");
     } else if (nav.hasAttribute("active")) {
       nav.removeAttribute("active");
     }
@@ -861,6 +874,26 @@ function setNavActive(activeNav) {
 
 let panelRequested = false;
 let syncTimer = null;
+let navObserver = null;
+let nativeActiveBeforeOpen = null;
+
+function suppressNativeNavActive() {
+  const own = document.getElementById(NAV_ID);
+  if (!own) return;
+  if (!panelRequested) {
+    if (own.hasAttribute("active")) own.removeAttribute("active");
+    return;
+  }
+  for (const nav of navItems()) {
+    if (nav !== own && nav.hasAttribute("active")) nav.removeAttribute("active");
+  }
+}
+
+function watchNavActive() {
+  if (navObserver || !document.body) return;
+  navObserver = new MutationObserver(suppressNativeNavActive);
+  navObserver.observe(document.body, { subtree: true, attributes: true, attributeFilter: ["active"] });
+}
 
 function startSync() {
   if (syncTimer === null) syncTimer = setInterval(keepPanelInSync, 300);
@@ -885,7 +918,11 @@ function openPanel() {
   if (existing) existing.remove();
   content.append(buildPanel());
 
-  setNavActive(document.getElementById(NAV_ID));
+  const ownNav = document.getElementById(NAV_ID);
+  if (!nativeActiveBeforeOpen) {
+    nativeActiveBeforeOpen = navItems().find((nav) => nav !== ownNav && nav.hasAttribute("active")) ?? null;
+  }
+  setNavActive(ownNav);
   const currentTitle = document.querySelector(".lol-settings-title-current");
   if (currentTitle) currentTitle.textContent = TAB_TITLE.toUpperCase();
 }
@@ -897,7 +934,9 @@ function closePanel() {
   panel.remove();
   const options = document.querySelector(".lol-settings-content .lol-settings-options");
   if (options) options.style.display = "";
-  setNavActive(null);
+  document.getElementById(NAV_ID)?.removeAttribute("active");
+  if (nativeActiveBeforeOpen?.isConnected) nativeActiveBeforeOpen.setAttribute("active", "true");
+  nativeActiveBeforeOpen = null;
 }
 
 function keepPanelInSync() {
@@ -905,6 +944,7 @@ function keepPanelInSync() {
   if (!content) {
     panelRequested = false;
     stopSync();
+    document.getElementById(NAV_ID)?.removeAttribute("active");
     return;
   }
   if (!panelRequested) {
@@ -923,12 +963,7 @@ function keepPanelInSync() {
   if (options && options.style.display !== "none") options.style.display = "none";
 
   const nav = document.getElementById(NAV_ID);
-  if (nav) {
-    for (const other of document.querySelectorAll(".lol-settings-nav")) {
-      if (other !== nav && other.hasAttribute("active")) other.removeAttribute("active");
-    }
-    if (nav.getAttribute("active") !== "true") nav.setAttribute("active", "true");
-  }
+  if (nav) setNavActive(nav);
 
   const title = document.querySelector(".lol-settings-title-current");
   if (title && title.textContent !== TAB_TITLE.toUpperCase()) title.textContent = TAB_TITLE.toUpperCase();
@@ -967,6 +1002,7 @@ function isDoneButton(target) {
 
 function installSettingsTab() {
   addStyle(STYLE_ID, STYLE_CSS);
+  watchNavActive();
 
   document.addEventListener(
     "click",

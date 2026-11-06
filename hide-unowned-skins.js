@@ -78,16 +78,11 @@ function installArrayFilter() {
       return owned;
     });
     if (!changed) return result;
-    filterStats.array = (filterStats.array || 0) + 1;
-    filterStats.source = "array";
-    filterStats.lastIn = result.length;
-    filterStats.lastOut = kept.length;
     return kept;
   };
   wrapped.__perfSkinFilter = FILTER_VERSION;
   proto.filter = wrapped;
 }
-const filterStats = (globalThis.__perfSkinFilterStats ??= { carousel: 0, source: "", lastIn: 0, lastOut: 0 });
 let rawFetch = (typeof window !== "undefined" && window.fetch && window.fetch.__perfOriginalFetch) || null;
 let clientSkinOrder = [];
 
@@ -127,8 +122,6 @@ function filterSkinList(list) {
     })
     .filter(isOwnedSkin);
   if (filtered.length !== list.length) changed = true;
-  filterStats.lastIn = list.length;
-  filterStats.lastOut = filtered.length;
   return changed ? filtered : null;
 }
 
@@ -153,8 +146,6 @@ function rewriteWebSocketFrame(text) {
   if (!payload || typeof payload !== "object" || typeof payload.uri !== "string") return null;
   if (payload.uri.split("?")[0] !== CAROUSEL_URI) return null;
   const kept = filterSkinList(payload.data);
-  filterStats.carousel++;
-  filterStats.source = "ws";
   recordClientOrder(kept ?? payload.data);
   if (!kept) return null;
   return JSON.stringify([frame[0], frame[1], Object.assign({}, payload, { data: kept })]);
@@ -235,7 +226,6 @@ function installFetchFilter() {
   const original = window.fetch;
   if (typeof original !== "function" || original.__perfSkinFilter === FILTER_VERSION) return;
   if (!rawFetch) rawFetch = original.__perfOriginalFetch || original;
-  globalThis.__perfNativeFetch = rawFetch;
 
   const wrapped = function (input, init) {
     const url =
@@ -261,8 +251,6 @@ function installFetchFilter() {
         .catch(() => null)
         .then((json) => {
           const kept = filterSkinList(json);
-          filterStats.carousel++;
-          filterStats.source = "fetch";
           recordClientOrder(kept ?? json);
           if (!kept) return response;
           return new Response(JSON.stringify(kept), {
@@ -307,8 +295,6 @@ function installXhrFilter() {
           try {
             const json = JSON.parse(raw);
             const kept = filterSkinList(json);
-            filterStats.carousel++;
-            filterStats.source = "xhr";
             recordClientOrder(kept ?? json);
             if (kept) cache.filtered = JSON.stringify(kept);
           } catch {
@@ -442,10 +428,6 @@ function applyAll() {
   });
 }
 
-function applyAllGuarded() {
-  applyAll();
-}
-
 let applyQueued = false;
 
 function scheduleApply() {
@@ -558,7 +540,7 @@ function resetState() {
   failure = null;
   sessionMisses = 0;
   championMisses = 0;
-  applyAllGuarded();
+  applyAll();
 }
 
 function loadChampion(championId) {
@@ -579,7 +561,7 @@ function loadChampion(championId) {
       topLevelOrder = topLevel;
       ownedTopLevelIds = ownedTopLevel;
       carouselOrder = carouselIds.length > 0 ? carouselIds : inventoryOrder;
-      applyAllGuarded();
+      applyAll();
     },
     (error) => {
       if (token !== requestToken) return;
@@ -618,7 +600,7 @@ function updateForSession(session, selection) {
     }
   }
 
-  applyAllGuarded();
+  applyAll();
 }
 
 function scheduleRefresh() {

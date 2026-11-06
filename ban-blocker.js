@@ -1,4 +1,4 @@
-export const version = "3.6.0";
+export const version = "3.6.2";
 
 const PLUGIN_ID = "ban-blocker";
 const STYLE_ID = "perfectionist-ban-blocker-style";
@@ -70,6 +70,7 @@ const fetchedNames = new Set();
 const playerNames = new Map();
 const cellToPlayer = new Map();
 const buttons = new Map();
+const swapSeen = new Set();
 const failedUntil = new Map();
 const failCount = new Map();
 let rows = [];
@@ -159,10 +160,19 @@ function linkPlayer(p, rowName, cellId) {
   return root;
 }
 
+function pickStarted(s) {
+  const actions = s?.actions?.flat?.() ?? [];
+  return actions.some((a) => a.type === "pick" && (a.isInProgress || a.completed));
+}
+
 function banPending(s) {
-  const bans = (s?.actions?.flat?.() ?? []).filter((a) => a.type === "ban");
+  const actions = s?.actions?.flat?.() ?? [];
+  const bans = actions.filter((a) => a.type === "ban");
   if (!bans.length) return true;
-  return bans.some((a) => !a.completed);
+  if (bans.some((a) => !a.completed)) return true;
+  const phase = s?.timer?.phase;
+  if (phase && phase !== "BAN_PICK") return false;
+  return !pickStarted(s);
 }
 
 function pump() {
@@ -254,6 +264,7 @@ function onSessionGone() {
   lastSession = null;
   goneAway = true;
   uiVisible = false;
+  swapSeen.clear();
   removeButtons();
   if (!goneTimer) {
     goneTimer = setTimeout(() => {
@@ -449,16 +460,31 @@ function isSelfRow(r) {
   return lastSession?.localPlayerCellId != null && (r.cell ?? r.slotId) === lastSession.localPlayerCellId;
 }
 
+function rowKey(r) {
+  return String(r.slotId ?? r.cell ?? r.index);
+}
+
 function nativeSwapIn(circle) {
-  return !!circle.querySelector(".swap-button-component:not([data-bb])");
+  if (!circle) return false;
+  return [...circle.querySelectorAll(".swap-button-component")].some((el) => el.dataset.bb !== "1");
 }
 
 function ensureButtons() {
   const list = getRows();
   for (const r of list) {
+    if (!r.circle || !r.circle.isConnected) r.circle = r.el.querySelector(".champion-icon-container");
     if (!r.circle || !r.circle.isConnected) continue;
+    const key = rowKey(r);
     let btn = buttons.get(r.index);
-    if (isSelfRow(r) || !nativeSwapIn(r.circle)) {
+    if (isSelfRow(r)) {
+      if (btn) {
+        btn.remove();
+        buttons.delete(r.index);
+      }
+      continue;
+    }
+    if (nativeSwapIn(r.circle)) swapSeen.add(key);
+    if (!swapSeen.has(key)) {
       if (btn) {
         btn.remove();
         buttons.delete(r.index);
@@ -531,6 +557,7 @@ function update() {
     renderButtons();
   } else if (uiVisible) {
     uiVisible = false;
+    swapSeen.clear();
     removeButtons();
   }
 }
@@ -605,6 +632,7 @@ function onDisable() {
   observer = null;
 
   uiVisible = false;
+  swapSeen.clear();
   goneAway = true;
   target = undefined;
   sent = 0;
