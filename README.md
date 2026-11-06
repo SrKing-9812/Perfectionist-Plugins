@@ -2,7 +2,7 @@
 
 # Perfectionism
 
-**Small plugins that fix the annoying parts of League of Legends champ select.**
+**Small plugins that fix the annoying parts of the League of Legends client.**
 
 Built for [Pengu Loader](https://pengu.lol)
 
@@ -16,85 +16,29 @@ Built for [Pengu Loader](https://pengu.lol)
 
 ## Plugins
 
-<table>
-  <tr>
-    <th align="left">🛡️ Ban Blocker</th>
-  </tr>
-  <tr>
-    <td>
-      In champ select, every teammate except you gets a <b>BLOCK</b> button.
-      <br><br>
-      While a teammate is blocked, the plugin instantly prepicks the champion they are about to ban on your own pick turn. That way, their ban can never land on it.
-    </td>
-  </tr>
-  <tr>
-    <td>&nbsp;</td>
-  </tr>
-  <tr>
-    <th align="left">🎨 Hide Unowned Skins</th>
-  </tr>
-  <tr>
-    <td>
-      In champ select, the skin carousel only shows the skins you own for the champion you picked.
-      <br><br>
-      The list is filtered where the client reads it, so the carousel, the arrows and the dots all move through owned
-      skins only, and the ones that are left keep their normal spacing.
-    </td>
-  </tr>
-  <tr>
-    <td>&nbsp;</td>
-  </tr>
-  <tr>
-    <th align="left">🔓 Unlock Profile Skins</th>
-  </tr>
-  <tr>
-    <td>
-      In the <b>Set profile background</b> window, every skin shows as unlocked, even the event skins (Signature).
-      <br><br>
-      Browse the full list and pick any skin you like as your profile background.
-    </td>
-  </tr>
-  <tr>
-    <td>&nbsp;</td>
-  </tr>
-  <tr>
-    <th align="left">🎁 Auto Claimer</th>
-  </tr>
-  <tr>
-    <td>
-      Claims every reward for you the moment it becomes claimable — event tracks, missions and the TFT Battle Pass.
-      <br><br>
-      Three optional extras: auto-buy shop items Riot lists for 1 BE, auto-open mystery loot (icons, ward skins), and auto-open chests with keys.
-    </td>
-  </tr>
-  <tr>
-    <td>&nbsp;</td>
-  </tr>
-  <tr>
-    <th align="left">🚀 BetterClient</th>
-  </tr>
-  <tr>
-    <td>
-      Debloats the client without changing how it looks or behaves and fixes bugs.
-      <br><br>
-      For weaker machines there is one optional switch, <b>Performance mode</b>, which drops background blur,
-      decorative animation and looping background video. Leave it off and the client is pixel-identical.
-    </td>
-  </tr>
-</table>
+| Plugin | What it does |
+| --- | --- |
+| 🚀 **BetterClient** | Makes the client lighter and smoother without changing how it looks or behaves. Cuts tracking and repeated requests and fixes small bugs. For weaker PCs there is one optional switch, **Performance mode**, which drops background blur, decorative animation and looping background video. Leave it off and the client is pixel-identical. |
+| 🛡️ **Ban Blocker** | Adds a **BLOCK** button to your teammates in champ select. While a teammate is blocked, the champion they are about to ban is prepicked for you on your own pick turn, so their ban can never land on it. |
+| 🔓 **Unlock Profile Skins** | In the **Set profile background** window, every skin shows as unlocked, even event skins (Signature). Browse the full list and pick any skin you like. |
+| 🎨 **Hide Unowned Skins** | In champ select, the skin carousel only shows the skins you own for the champion you picked. The arrows and dots only move through owned skins, and the ones that are left keep their normal spacing. |
+| ✅ **Auto Accept** | Accepts the match for you when the ready check pops up. Add an optional delay, and switch it on or off from the lobby footer. |
+| 🚪 **Dodge Helper** | Adds a button to leave champ select: **DODGE** in ranked Solo/Duo and Flex, with the estimated LP you will lose, and **QUIT** in every other mode. |
+| 🎁 **Auto Claimer** | Claims rewards for you the moment they become claimable: event tracks, missions and the TFT Battle Pass. Three optional extras: auto-buy shop items Riot lists for 1 BE, auto-open mystery loot (icons, ward skins), and auto-open chests with keys. |
+| 📬 **Auto Read** | Marks quests, loot, Clash, TFT and client notices as read, so no badge or dot stays lit. |
 
 ## Install
 
 1. Download this repo.
 2. Move the `Perfectionism` folder into your Pengu Loader `plugins` folder.
 3. Restart the League Client.
+4. Open **Settings → Perfectionism** to turn plugins on or off and change their options.
 
 ## Updates
 
-Every time the client starts, the loader checks npm for a newer version and runs it. Publishing
-a new version of the npm package **is** the update. If a new version appears while the client is
-already open, the suite downloads it with a progress window and restarts the client at a safe
-moment (never in the middle of a game). You never replace files by hand.
+Perfectionism updates itself. Every time the client starts, the loader checks npm for a newer version and runs it.
+If a new version appears while the client is already open, it downloads it with a progress window and restarts the
+client at a safe moment (never in the middle of a game). You never replace files by hand.
 
 <br>
 
