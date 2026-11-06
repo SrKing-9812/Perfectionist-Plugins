@@ -170,7 +170,7 @@ let searchQuery = "";
 let runningVersion = version;
 let coreStarted = false;
 
-let state = { installed: {}, enabled: {}, options: {}, masterLocked: false, defaultsOff: true };
+let state = { installed: {}, enabled: {}, options: {}, masterLocked: false };
 const unloadPending = new Set();
 
 let saveBlocked = false;
@@ -201,20 +201,10 @@ async function loadState() {
       enabled: saved.enabled ?? {},
       options: saved.options ?? {},
       masterLocked: saved.masterLocked === true,
-      defaultsOff: saved.defaultsOff === true,
     };
-    if (!state.defaultsOff) keepLegacyDefaults();
     return;
   }
   if (failed) saveBlocked = true;
-}
-
-function keepLegacyDefaults() {
-  for (const [id, installed] of Object.entries(state.installed)) {
-    if (installed !== true || typeof state.enabled[id] === "boolean") continue;
-    state.enabled[id] = true;
-  }
-  state.defaultsOff = true;
 }
 
 function saveState() {
@@ -225,7 +215,6 @@ function saveState() {
     enabled: state.enabled,
     options: state.options,
     masterLocked: state.masterLocked === true,
-    defaultsOff: state.defaultsOff === true,
   };
   try {
     localStorage.setItem(STATE_KEY, JSON.stringify(record));
@@ -250,6 +239,7 @@ function moduleById(id) {
 function isPluginEnabled(id) {
   if (!registry.has(id) && !moduleById(id)) return false;
   if (state.masterLocked === true) return false;
+  // New plugins start off. Only an explicit saved true enables one.
   return state.enabled[id] === true;
 }
 
