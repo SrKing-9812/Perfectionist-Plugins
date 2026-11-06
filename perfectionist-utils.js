@@ -170,32 +170,62 @@ let searchQuery = "";
 let runningVersion = version;
 let coreStarted = false;
 
-let state = { installed: {}, enabled: {}, options: {}, masterLocked: false };
+let state = { installed: {}, enabled: {}, options: {}, masterLocked: false, defaultsOff: true };
+const unloadPending = new Set();
+
+let saveBlocked = false;
+
+async function readSavedState() {
+  let saved = null;
+  let failed = false;
+  try {
+    if (typeof DataStore !== "undefined") saved = await DataStore.get(STATE_KEY);
+  } catch {
+    failed = true;
+  }
+  if (!saved?.installed) {
+    try {
+      saved = JSON.parse(localStorage.getItem(STATE_KEY) || "null");
+    } catch {
+      saved = null;
+    }
+  }
+  return { saved, failed };
+}
 
 async function loadState() {
-  let saved = null;
-  try {
-    saved =
-      typeof DataStore !== "undefined"
-        ? await DataStore.get(STATE_KEY)
-        : JSON.parse(localStorage.getItem(STATE_KEY) || "null");
-  } catch {
-    saved = null;
-  }
+  const { saved, failed } = await readSavedState();
   if (saved?.installed && typeof saved.installed === "object") {
-    state = { installed: saved.installed, enabled: saved.enabled ?? {}, options: saved.options ?? {}, masterLocked: saved.masterLocked === true };
+    state = {
+      installed: saved.installed,
+      enabled: saved.enabled ?? {},
+      options: saved.options ?? {},
+      masterLocked: saved.masterLocked === true,
+      defaultsOff: saved.defaultsOff === true,
+    };
+    if (!state.defaultsOff) keepLegacyDefaults();
     return;
   }
-  saveState();
+  if (failed) saveBlocked = true;
+}
+
+function keepLegacyDefaults() {
+  for (const [id, installed] of Object.entries(state.installed)) {
+    if (installed !== true || typeof state.enabled[id] === "boolean") continue;
+    state.enabled[id] = true;
+  }
+  state.defaultsOff = true;
 }
 
 function saveState() {
+  if (saveBlocked) return;
   const record = {
     version: /^\d/.test(runningVersion) ? runningVersion : undefined,
     installed: state.installed,
     enabled: state.enabled,
     options: state.options,
     masterLocked: state.masterLocked === true,
+    defaultsOff: state.defaultsOff === true,
   };
   try {
     localStorage.setItem(STATE_KEY, JSON.stringify(record));
@@ -213,10 +243,23 @@ function logError(scope, error) {
   console.error(`[Perfectionism] ${scope}`, error);
 }
 
+function moduleById(id) {
+  return BUNDLED_MODULES.find((m) => m.id === id) ?? null;
+}
+
 function isPluginEnabled(id) {
-  const entry = registry.get(id);
-  if (!entry) return false;
-  return typeof state.enabled[id] === "boolean" ? state.enabled[id] : entry.defaultEnabled;
+  if (!registry.has(id) && !moduleById(id)) return false;
+  if (state.masterLocked === true) return false;
+  return state.enabled[id] === true;
+}
+
+function trackUnload(id) {
+  if (isPluginEnabled(id)) unloadPending.delete(id);
+  else unloadPending.add(id);
+}
+
+function needsReload() {
+  return pendingReload || unloadPending.size > 0;
 }
 
 function applyLifecycle(entry, enabled) {
@@ -265,10 +308,19 @@ function setPluginEnabled(id, enabled) {
   const entry = registry.get(id);
   state.enabled[id] = Boolean(enabled);
   saveState();
-  if (!entry) return false;
-  applyLifecycle(entry, Boolean(enabled));
+  if (entry) {
+    applyLifecycle(entry, isPluginEnabled(id));
+    trackUnload(id);
+    refreshPanel();
+    return true;
+  }
+  const mod = moduleById(id);
+  if (enabled && state.masterLocked !== true && mod && !mod.core && isInstalled(mod)) {
+    loadModule(mod).then(refreshPanel);
+    return true;
+  }
   refreshPanel();
-  return true;
+  return false;
 }
 
 function findOption(entry, key) {
@@ -329,13 +381,14 @@ function importModule(url) {
 
 async function installModule(mod) {
   state.installed[mod.id] = true;
-  delete state.enabled[mod.id];
+  state.enabled[mod.id] = false;
   saveState();
   pendingReload = true;
   refreshPanel();
 }
 
 async function uninstallModule(mod) {
+  if (registry.has(mod.id)) unloadPending.add(mod.id);
   unregisterPlugin(mod.id);
   state.enabled[mod.id] = false;
   state.installed[mod.id] = false;
@@ -348,19 +401,28 @@ function reloadClientNow() {
   else window.location.reload();
 }
 
+async function loadModule(mod) {
+  if (resolved.has(mod.id) || registry.has(mod.id)) return;
+  try {
+    const plugin = await importModule(moduleUrl(mod.file));
+    resolved.set(mod.id, plugin);
+    plugin.init?.();
+  } catch (error) {
+    logError(`could not load ${mod.name}.`, error);
+  }
+}
+
+async function loadEnabledModules() {
+  for (const mod of BUNDLED_MODULES) {
+    if (mod.core || !isInstalled(mod) || !isPluginEnabled(mod.id)) continue;
+    await loadModule(mod);
+  }
+}
+
 async function loadModules() {
   if (modulesLoaded) return;
   modulesLoaded = true;
-  for (const mod of BUNDLED_MODULES) {
-    if (mod.core || resolved.has(mod.id) || registry.has(mod.id) || !isInstalled(mod)) continue;
-    try {
-      const plugin = await importModule(moduleUrl(mod.file));
-      resolved.set(mod.id, plugin);
-      plugin.init?.();
-    } catch (error) {
-      logError(`could not load ${mod.name}.`, error);
-    }
-  }
+  await loadEnabledModules();
 }
 
 function scheduleScan() {
@@ -650,12 +712,21 @@ function masterLocked() {
 function disableAllPlugins() {
   state.masterLocked = true;
   saveState();
+  for (const entry of registry.values()) {
+    applyLifecycle(entry, false);
+    trackUnload(entry.id);
+  }
   refreshPanel();
 }
 
 function enableAllPlugins() {
   state.masterLocked = false;
   saveState();
+  for (const entry of registry.values()) {
+    applyLifecycle(entry, isPluginEnabled(entry.id));
+    trackUnload(entry.id);
+  }
+  loadEnabledModules().then(refreshPanel);
   refreshPanel();
 }
 
@@ -777,9 +848,21 @@ function setNavActive(activeNav) {
 }
 
 let panelRequested = false;
+let syncTimer = null;
+
+function startSync() {
+  if (syncTimer === null) syncTimer = setInterval(keepPanelInSync, 300);
+}
+
+function stopSync() {
+  if (syncTimer === null) return;
+  clearInterval(syncTimer);
+  syncTimer = null;
+}
 
 function openPanel() {
   panelRequested = true;
+  startSync();
   const content = document.querySelector(".lol-settings-content");
   if (!content) return;
 
@@ -809,6 +892,7 @@ function keepPanelInSync() {
   const content = document.querySelector(".lol-settings-content");
   if (!content) {
     panelRequested = false;
+    stopSync();
     return;
   }
   if (!panelRequested) {
@@ -839,6 +923,7 @@ function keepPanelInSync() {
 }
 
 function ensureSettingsTab(titleNode) {
+  startSync();
   if (document.getElementById(NAV_ID)) return;
 
   const scope = titleNode.closest("lol-uikit-scrollable") ?? titleNode.parentElement;
@@ -876,8 +961,9 @@ function installSettingsTab() {
     (event) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
-      if (pendingReload && isDoneButton(target)) {
+      if (needsReload() && isDoneButton(target)) {
         pendingReload = false;
+        unloadPending.clear();
         reloadClientNow();
         return;
       }
@@ -900,7 +986,6 @@ function installSettingsTab() {
   );
 
   watch(".lol-settings-nav-title", ensureSettingsTab);
-  setInterval(keepPanelInSync, 300);
 }
 
 const utils = {
