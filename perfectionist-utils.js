@@ -348,11 +348,11 @@ function findOption(entry, key) {
   return null;
 }
 
-function getOption(id, key) {
+function getOption(id, key, fallback = false) {
   const entry = registry.get(id);
-  const fallback = findOption(entry, key)?.default;
+  const fallbackValue = findOption(entry, key)?.default ?? fallback;
   const stored = state.options?.[id]?.[key];
-  return stored === undefined ? Boolean(fallback) : Boolean(stored);
+  return stored === undefined ? Boolean(fallbackValue) : Boolean(stored);
 }
 
 function setOption(id, key, value, refresh = true) {

@@ -4,7 +4,7 @@ export const version = "1.1.2";
 const PHASE_URI = "/lol-gameflow/v1/gameflow-phase";
 const READY_CHECK_URI = "/lol-matchmaking/v1/ready-check";
 const ACCEPT_URI = "/lol-matchmaking/v1/ready-check/accept";
-const OPTION_KEY = "autoAccept";
+const ACCEPT_KEY = "autoAccept";
 const DELAY_KEY = "perfectionist:auto-accept:delay";
 const MAX_DELAY = 15000;
 const RETRY_MS = 700;
@@ -75,7 +75,7 @@ function writeDelay(value) {
 
 function enabled() {
   try {
-    return api?.getOption?.(PLUGIN_ID, OPTION_KEY) === true;
+    return api?.getOption?.(PLUGIN_ID, ACCEPT_KEY, true) === true;
   } catch {
     return false;
   }
@@ -189,7 +189,7 @@ function syncButton() {
 function toggle() {
   const next = !enabled();
   try {
-    api.setOption(PLUGIN_ID, OPTION_KEY, next);
+    api.setOption(PLUGIN_ID, ACCEPT_KEY, next, false);
   } catch {}
   syncButton();
   if (next) queueAccept();
@@ -345,33 +345,16 @@ function onDisable() {
   api = null;
 }
 
-function onOptionChange(key) {
-  if (key !== OPTION_KEY) return;
-  syncButton();
-  if (enabled()) queueAccept();
-  else resetReadyCheck();
-}
-
 export function init() {
   const registerWith = (utils) => {
     utils.registerPlugin({
       id: PLUGIN_ID,
       name: "Auto Accept",
       description:
-        "Accepts the ready check automatically, with an optional delay. The same switch is shown natively in the lobby footer.",
+        "Accepts the ready check automatically, with an optional delay. Use the Auto Accept switch in the lobby footer to turn it on or off.",
       version,
-      options: [
-        {
-          key: OPTION_KEY,
-          label: "Auto accept matches",
-          description:
-            "Accepts the ready check for you. The Auto Accept switch in the lobby footer toggles this same setting.",
-          default: true,
-        },
-      ],
       onEnable,
       onDisable,
-      onOptionChange,
     });
   };
 
