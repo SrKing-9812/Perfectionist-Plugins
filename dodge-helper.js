@@ -1,5 +1,5 @@
 const PLUGIN_ID = "dodge-helper";
-export const version = "1.4.0";
+export const version = "1.4.2";
 
 const PHASE_URI = "/lol-gameflow/v1/gameflow-phase";
 const SESSION_URI = "/lol-gameflow/v1/session";
@@ -62,6 +62,7 @@ const state = {
   account: null,
   penalty: null,
   lastSelfDodgeAt: 0,
+  lockedLocalPick: false,
   anchor: null,
 };
 
@@ -198,6 +199,8 @@ async function refreshPenalty() {
   if (!active || token !== penaltyToken || queueId !== state.queueId) return;
   state.penalty = penalty;
   render();
+  bindButton(document.getElementById(BUTTON_ID));
+  requestAnimationFrame(() => bindButton(document.getElementById(BUTTON_ID)));
 }
 
 function applySession(raw) {
@@ -219,6 +222,16 @@ function applySession(raw) {
   ensureMount();
 }
 
+function syncLocalPick(session) {
+  const cellId = Number(session?.localPlayerCellId);
+  if (!Number.isFinite(cellId)) return;
+  const actions = Array.isArray(session.actions) ? session.actions.flat() : [];
+  const locked = actions.some(
+    (action) => Number(action?.actorCellId) === cellId && action?.type === "pick" && action?.completed === true
+  );
+  if (locked) state.lockedLocalPick = true;
+}
+
 function applyChampSelect(raw) {
   const session = unwrap(raw);
   if (!session) return;
@@ -226,6 +239,7 @@ function applyChampSelect(raw) {
   const queueId = Number(session.queueId ?? 0) || 0;
   if (queueId > 0) state.queueId = queueId;
   if (session.isCustomGame) state.isCustom = true;
+  syncLocalPick(session);
   ensureMount();
   syncWatching();
 }
@@ -238,6 +252,25 @@ function unmount() {
   }
 }
 
+function onButtonClick(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  quitOrDodge();
+}
+
+function bindButton(button) {
+  if (!button) return;
+  if (!button.__perfClickBound) {
+    button.__perfClickBound = true;
+    button.addEventListener("click", onButtonClick, true);
+  }
+  const inner = button.shadowRoot?.querySelector(".lol-uikit-flat-button");
+  if (inner && !inner.__perfClickBound) {
+    inner.__perfClickBound = true;
+    inner.addEventListener("click", onButtonClick);
+  }
+}
+
 function build() {
   const root = document.createElement("div");
   root.id = ROOT_ID;
@@ -246,11 +279,7 @@ function build() {
   lp.className = "perf-dodge-lp";
   const button = document.createElement("lol-uikit-flat-button");
   button.id = BUTTON_ID;
-  button.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    quitOrDodge();
-  });
+  bindButton(button);
   root.append(lp, button);
   return root;
 }
@@ -287,11 +316,15 @@ function ensureMount() {
   const roots = [...document.querySelectorAll(`#${ROOT_ID}`)];
   for (const extra of roots.slice(1)) extra.remove();
   const root = roots[0] ?? build();
-  if (root.parentElement !== target.element) target.element.append(root);
+  if (root.parentElement !== target.element) target.element.prepend(root);
+  else if (target.kind === "quit" && target.element.firstElementChild !== root) target.element.prepend(root);
   root.classList.toggle("perf-dodge-quit", target.kind === "quit");
   root.classList.toggle("perf-dodge-bar", target.kind === "bar");
   root.classList.toggle("perf-dodge-floating", target.kind === "floating");
   render();
+  bindButton(document.getElementById(BUTTON_ID));
+  requestAnimationFrame(() => bindButton(document.getElementById(BUTTON_ID)));
+  setTimeout(() => bindButton(document.getElementById(BUTTON_ID)), 500);
 }
 
 function scheduleMount() {
@@ -409,8 +442,16 @@ async function quitOrDodge() {
 }
 
 async function handlePhase(raw) {
+  const previous = state.phase;
   const phase = typeof raw === "string" ? raw : unwrap(raw);
   if (typeof phase === "string" && phase) state.phase = phase;
+  if (previous === "ChampSelect" && state.phase !== "ChampSelect" && state.phase !== "GameStart" && state.phase !== "InProgress") {
+    if (RANKED_QUEUES.has(state.queueId) && !state.lockedLocalPick && !hasNativeQuit()) {
+      recordDodge();
+    }
+    state.lockedLocalPick = false;
+  }
+  if (state.phase === "ChampSelect" && previous !== "ChampSelect") state.lockedLocalPick = false;
   if (state.phase === "ChampSelect") {
     await loadAccount();
     const [session, champSelect] = await Promise.all([
@@ -491,6 +532,7 @@ function onDisable() {
   state.account = null;
   state.penalty = null;
   state.lastSelfDodgeAt = 0;
+  state.lockedLocalPick = false;
   penaltyToken = 0;
   api = null;
 }

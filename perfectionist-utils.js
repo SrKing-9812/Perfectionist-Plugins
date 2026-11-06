@@ -65,14 +65,14 @@ const BUNDLED_MODULES = [
     id: "auto-accept",
     file: "auto-accept.js",
     name: "Auto Accept",
-    version: "1.1.0",
+    version: "1.1.1",
     description: "Accepts the ready check automatically, with an optional delay and a native switch in the lobby footer.",
   },
   {
     id: "dodge-helper",
     file: "dodge-helper.js",
     name: "Dodge Helper",
-    version: "1.4.0",
+    version: "1.4.2",
     description: "Adds a DODGE/QUIT button to champion select: DODGE with the estimated LP loss for ranked queues, QUIT for every other mode.",
   },
 ];

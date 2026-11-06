@@ -1,5 +1,5 @@
 const PLUGIN_ID = "auto-accept";
-export const version = "1.1.0";
+export const version = "1.1.1";
 
 const PHASE_URI = "/lol-gameflow/v1/gameflow-phase";
 const READY_CHECK_URI = "/lol-matchmaking/v1/ready-check";
@@ -14,8 +14,12 @@ const ROOT_ID = "perfAutoAccept";
 const TOGGLE_ID = "perfAutoAcceptToggle";
 const DELAY_INPUT_ID = "perfAutoAcceptDelay";
 
-const CSS = `#perfAutoAccept { display: flex !important; align-items: center !important; gap: 8px !important; }
-#perfAutoAccept .auto-accept-button { cursor: pointer !important; }
+const CSS = `#perfAutoAccept {
+  display: flex !important; flex-direction: row !important; flex-wrap: nowrap !important;
+  align-items: center !important; gap: 8px !important; width: max-content !important;
+}
+#perfAutoAccept > * { flex: 0 0 auto !important; }
+#perfAutoAccept .auto-accept-button { display: inline-flex !important; align-items: center !important; cursor: pointer !important; }
 #perfAutoAccept .auto-accept-button-text {
   font-family: var(--font-body, "LoL Body", Arial, sans-serif) !important;
   font-size: 12px !important; letter-spacing: 0.3px !important; color: #a09b8c !important;
@@ -23,7 +27,7 @@ const CSS = `#perfAutoAccept { display: flex !important; align-items: center !im
 #perfAutoAccept .auto-accept-button[selected] .auto-accept-button-text { color: #f0e6d2 !important; }
 #perfAutoAccept .auto-accept-delay {
   display: flex !important; align-items: center !important; box-sizing: border-box !important;
-  width: 82px !important; height: 24px !important; margin-left: 8px !important;
+  width: 82px !important; height: 24px !important; margin-left: 0 !important;
   background: #1e2328 !important; border: 1px solid #785a28 !important; border-radius: 0 !important;
   transition: border-color 0.15s ease, background-color 0.15s ease !important;
 }
@@ -239,6 +243,8 @@ function buildButton() {
   return root;
 }
 
+let buttonRetry = null;
+
 function footer() {
   return (
     document.querySelector(".v2-footer-notifications.ember-view") ??
@@ -246,8 +252,22 @@ function footer() {
   );
 }
 
+function gameSelectOpen() {
+  try {
+    return !!document.querySelector(".parties-game-select-screen.game-select-show");
+  } catch {
+    return false;
+  }
+}
+
 function ensureButton() {
   if (!active) return;
+  clearTimeout(buttonRetry);
+  buttonRetry = null;
+  if (gameSelectOpen()) {
+    buttonRetry = setTimeout(ensureButton, 750);
+    return;
+  }
   const host = footer();
   if (!host) return;
   if (!document.getElementById(ROOT_ID)) host.append(buildButton());
@@ -294,6 +314,8 @@ function onDisable() {
   domObserver = null;
   clearTimeout(domTimer);
   domTimer = null;
+  clearTimeout(buttonRetry);
+  buttonRetry = null;
   document.getElementById(ROOT_ID)?.remove();
   removeStyle?.();
   removeStyle = null;
