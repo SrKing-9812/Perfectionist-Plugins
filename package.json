@@ -1,6 +1,6 @@
 {
   "name": "perfectionist-plugins",
-  "version": "2.4.2",
+  "version": "2.4.3",
   "description": "Small plugins that fix the annoying parts of League of Legends champ select. Built for Pengu Loader.",
   "type": "module",
   "main": "perfectionist-utils.js",
@@ -12,7 +12,9 @@
     "./unlock-profile-skins.js": "./unlock-profile-skins.js",
     "./auto-claimer.js": "./auto-claimer.js",
     "./auto-read.js": "./auto-read.js",
-    "./better-client.js": "./better-client.js"
+    "./better-client.js": "./better-client.js",
+    "./dodge-helper.js": "./dodge-helper.js",
+    "./auto-accept.js": "./auto-accept.js"
   },
   "files": [
     "perfectionist-utils.js",
@@ -21,7 +23,9 @@
     "unlock-profile-skins.js",
     "auto-claimer.js",
     "auto-read.js",
-    "better-client.js"
+    "better-client.js",
+    "dodge-helper.js",
+    "auto-accept.js"
   ],
   "repository": {
     "type": "git",
