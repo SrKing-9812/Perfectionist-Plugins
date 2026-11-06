@@ -721,7 +721,6 @@ export function init() {
       name: "Unlock Profile Skins",
       description: "Unlocks every skin in the Set profile background window.",
       version,
-      defaultEnabled: true,
       onEnable,
       onDisable,
     });

@@ -286,8 +286,6 @@ function createFetch(env) {
         storeInCache(key, ttl, response);
       }, () => {});
     }
-    // Every caller gets its own clone; the original response stays unread so
-    // concurrent callers can clone it after one caller consumes the body.
     return request.then((response) => (response?.clone ? response.clone() : response));
   }
 
@@ -780,7 +778,6 @@ export function init() {
       description:
         "Debloats the client: blocks telemetry and analytics calls, merges duplicate requests, caches static client data, decodes images asynchronously and keeps settings, chat and friend requests usable during a game.",
       version,
-      defaultEnabled: true,
       options: OPTIONS,
       onEnable,
       onDisable,

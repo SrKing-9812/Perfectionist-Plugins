@@ -362,7 +362,6 @@ export function init() {
       name: "Auto Claimer",
       description: "Automatically claims battle pass, event and mission rewards the moment they become claimable.",
       version,
-      defaultEnabled: true,
       options: [
         {
           key: "buy1Be",

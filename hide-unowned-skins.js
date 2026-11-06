@@ -361,7 +361,6 @@ let topLevelOrder = [];
 let ownedTopLevelIds = null;
 let currentChampionId = null;
 let carouselOrder = [];
-let selectedSkinId = null;
 let failure = null;
 let requestToken = 0;
 let refreshTimer = null;
@@ -371,7 +370,6 @@ let selectInFlight = false;
 let sessionMisses = 0;
 let championMisses = 0;
 let renderObserver = null;
-const skinSuffixCache = new Map();
 let removeStyle = null;
 
 function logError(scope, error) {
@@ -536,7 +534,6 @@ function nextOwnedSkin(owned, fromId, direction) {
 }
 
 async function selectSkin(skinId) {
-  selectedSkinId = skinId;
   selectInFlight = true;
   const guard = setTimeout(() => {
     selectInFlight = false;
@@ -556,7 +553,6 @@ function resetState() {
   topLevelOrder = [];
   ownedTopLevelIds = null;
   currentChampionId = null;
-  selectedSkinId = null;
   carouselOrder = [];
   clientSkinOrder = [];
   failure = null;
@@ -576,7 +572,7 @@ function loadChampion(championId) {
   const token = ++requestToken;
 
   Promise.all([loadOwnedSkins(championId), loadCarouselOrder()]).then(
-    ([{ owned, order: inventoryOrder, topLevel, ownedTopLevel, entries }, carouselIds]) => {
+    ([{ owned, order: inventoryOrder, topLevel, ownedTopLevel }, carouselIds]) => {
       if (token !== requestToken) return;
       ownedSkinIds = owned;
       allSkinIds = new Set(inventoryOrder);
@@ -613,8 +609,6 @@ function updateForSession(session, selection) {
   if (ownedSkinIds === null) return;
 
   const serverSkinId = selection?.selectedSkinId || me.selectedSkinId || null;
-  const belongsToChampion = serverSkinId !== null && Math.floor(serverSkinId / 1000) === championId;
-  if (!selectInFlight && belongsToChampion) selectedSkinId = serverSkinId;
 
   const knownUnownedSkin = allSkinIds !== null && allSkinIds.has(serverSkinId) && !ownedSkinIds.has(serverSkinId);
   if (!selectInFlight && knownUnownedSkin) {
@@ -697,7 +691,6 @@ export function init() {
       name: "Hide Unowned Skins",
       description: "In champion select, only shows the skins you own for the picked champion.",
       version,
-      defaultEnabled: true,
       onEnable,
       onDisable,
     });

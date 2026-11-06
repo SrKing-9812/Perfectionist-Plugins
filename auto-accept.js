@@ -1,5 +1,5 @@
 const PLUGIN_ID = "auto-accept";
-export const version = "1.1.1";
+export const version = "1.1.2";
 
 const PHASE_URI = "/lol-gameflow/v1/gameflow-phase";
 const READY_CHECK_URI = "/lol-matchmaking/v1/ready-check";
@@ -9,6 +9,7 @@ const DELAY_KEY = "perfectionist:auto-accept:delay";
 const MAX_DELAY = 15000;
 const RETRY_MS = 700;
 const MAX_ATTEMPTS = 4;
+const GAME_SELECT_GUARD_MS = 1500;
 const STYLE_ID = "perf-auto-accept-style";
 const ROOT_ID = "perfAutoAccept";
 const TOGGLE_ID = "perfAutoAcceptToggle";
@@ -244,6 +245,8 @@ function buildButton() {
 }
 
 let buttonRetry = null;
+let gameSelectGuardUntil = 0;
+let gameSelectClickHandler = null;
 
 function footer() {
   return (
@@ -253,11 +256,21 @@ function footer() {
 }
 
 function gameSelectOpen() {
+  if (Date.now() < gameSelectGuardUntil) return true;
   try {
     return !!document.querySelector(".parties-game-select-screen.game-select-show");
   } catch {
     return false;
   }
+}
+
+function onGameSelectClick(event) {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  if (!target.closest(".parties-game-select-screen, .play-button-container, .lobby-back-button")) return;
+  gameSelectGuardUntil = Date.now() + GAME_SELECT_GUARD_MS;
+  clearTimeout(buttonRetry);
+  buttonRetry = setTimeout(ensureButton, GAME_SELECT_GUARD_MS + 100);
 }
 
 function ensureButton() {
@@ -290,6 +303,10 @@ function onEnable(utils) {
   domObserver = new MutationObserver(scheduleEnsure);
   domObserver.observe(document.documentElement ?? document, { childList: true, subtree: true });
 
+  gameSelectClickHandler = onGameSelectClick;
+  document.addEventListener("pointerdown", gameSelectClickHandler, true);
+  document.addEventListener("click", gameSelectClickHandler, true);
+
   for (const uri of [PHASE_URI, READY_CHECK_URI]) {
     try {
       const off = utils.subscribe(uri, uri === PHASE_URI ? onPhase : onReadyCheck);
@@ -316,6 +333,12 @@ function onDisable() {
   domTimer = null;
   clearTimeout(buttonRetry);
   buttonRetry = null;
+  if (gameSelectClickHandler) {
+    document.removeEventListener("pointerdown", gameSelectClickHandler, true);
+    document.removeEventListener("click", gameSelectClickHandler, true);
+  }
+  gameSelectClickHandler = null;
+  gameSelectGuardUntil = 0;
   document.getElementById(ROOT_ID)?.remove();
   removeStyle?.();
   removeStyle = null;
@@ -337,7 +360,6 @@ export function init() {
       description:
         "Accepts the ready check automatically, with an optional delay. The same switch is shown natively in the lobby footer.",
       version,
-      defaultEnabled: true,
       options: [
         {
           key: OPTION_KEY,

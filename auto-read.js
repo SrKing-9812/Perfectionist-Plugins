@@ -358,7 +358,6 @@ export function init() {
       name: "Auto Read",
       description: "Automatically marks quests, loot, Clash, TFT and client notices as read so no badge or dot stays lit.",
       version,
-      defaultEnabled: true,
       options: [
         {
           type: "chips",

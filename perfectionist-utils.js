@@ -51,7 +51,7 @@ const BUNDLED_MODULES = [
     id: "auto-accept",
     file: "auto-accept.js",
     name: "Auto Accept",
-    version: "1.1.1",
+    version: "1.1.2",
     description: "Accepts the match for you when the ready check pops up. Add an optional delay, and switch it on or off from the lobby footer.",
   },
   {
@@ -163,7 +163,6 @@ let scanScheduled = false;
 
 let coords = null;
 const resolved = new Map();
-let availableModules = BUNDLED_MODULES;
 let pendingReload = false;
 let modulesLoaded = false;
 let searchQuery = "";
@@ -175,36 +174,60 @@ const unloadPending = new Set();
 
 let saveBlocked = false;
 
+const SAVED_STATE_TRIES = 3;
+const SAVED_STATE_RETRY_MS = 250;
+
+function isObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function looksLikeState(saved) {
+  return isObject(saved) && (isObject(saved.installed) || isObject(saved.enabled) || isObject(saved.options));
+}
+
 async function readSavedState() {
   let saved = null;
   let failed = false;
-  try {
-    if (typeof DataStore !== "undefined") saved = await DataStore.get(STATE_KEY);
-  } catch {
-    failed = true;
+  for (let attempt = 0; attempt < SAVED_STATE_TRIES; attempt += 1) {
+    failed = false;
+    try {
+      if (typeof DataStore !== "undefined") saved = await DataStore.get(STATE_KEY);
+    } catch {
+      failed = true;
+    }
+    if (looksLikeState(saved) || !failed) break;
+    await new Promise((resolve) => setTimeout(resolve, SAVED_STATE_RETRY_MS));
   }
-  if (!saved?.installed) {
+  if (!looksLikeState(saved)) {
     try {
       saved = JSON.parse(localStorage.getItem(STATE_KEY) || "null");
     } catch {
       saved = null;
     }
   }
-  return { saved, failed };
+  return { saved: looksLikeState(saved) ? saved : null, failed };
+}
+
+function normalizeState(saved) {
+  const next = {
+    installed: isObject(saved?.installed) ? { ...saved.installed } : {},
+    enabled: isObject(saved?.enabled) ? { ...saved.enabled } : {},
+    options: isObject(saved?.options) ? { ...saved.options } : {},
+    masterLocked: saved?.masterLocked === true,
+  };
+  for (const mod of BUNDLED_MODULES) {
+    if (mod.core) continue;
+    if (next.installed[mod.id] === undefined && (next.enabled[mod.id] === true || isObject(next.options[mod.id]))) {
+      next.installed[mod.id] = true;
+    }
+  }
+  return next;
 }
 
 async function loadState() {
   const { saved, failed } = await readSavedState();
-  if (saved?.installed && typeof saved.installed === "object") {
-    state = {
-      installed: saved.installed,
-      enabled: saved.enabled ?? {},
-      options: saved.options ?? {},
-      masterLocked: saved.masterLocked === true,
-    };
-    return;
-  }
-  if (failed) saveBlocked = true;
+  state = normalizeState(saved);
+  if (!saved && failed) saveBlocked = true;
 }
 
 function saveState() {
@@ -219,12 +242,12 @@ function saveState() {
   try {
     localStorage.setItem(STATE_KEY, JSON.stringify(record));
   } catch (error) {
-    console.error("[Perfectionism] Could not save plugin state.", error);
+    logError("Could not save plugin state.", error);
   }
   try {
     if (typeof DataStore !== "undefined") DataStore.set(STATE_KEY, record);
   } catch (error) {
-    console.error("[Perfectionism] Could not save plugin state.", error);
+    logError("Could not save plugin state.", error);
   }
 }
 
@@ -239,7 +262,6 @@ function moduleById(id) {
 function isPluginEnabled(id) {
   if (!registry.has(id) && !moduleById(id)) return false;
   if (state.masterLocked === true) return false;
-  // New plugins start off. Only an explicit saved true enables one.
   return state.enabled[id] === true;
 }
 
@@ -272,7 +294,7 @@ function applyLifecycle(entry, enabled) {
 }
 
 function registerPlugin(definition) {
-  const { id, name, description = "", version = "1.0.0", defaultEnabled = true, options = [], onEnable, onDisable, onOptionChange } = definition ?? {};
+  const { id, name, description = "", version = "1.0.0", options = [], onEnable, onDisable, onOptionChange } = definition ?? {};
   if (!id || !name) {
     throw new Error("[Perfectionism] registerPlugin needs an id and a name.");
   }
@@ -280,7 +302,7 @@ function registerPlugin(definition) {
     console.warn(`[Perfectionism] ${name} is already registered.`);
     return;
   }
-  const entry = { id, name, description, version, defaultEnabled, options, onEnable, onDisable, onOptionChange, active: false };
+  const entry = { id, name, description, version, options, onEnable, onDisable, onOptionChange, active: false };
   registry.set(id, entry);
   applyLifecycle(entry, isPluginEnabled(id));
   refreshPanel();
@@ -353,7 +375,7 @@ function getPlugins() {
 }
 
 function getAvailableModules() {
-  return availableModules.filter((m) => !m.core);
+  return BUNDLED_MODULES.filter((m) => !m.core);
 }
 
 function isInstalled(mod) {

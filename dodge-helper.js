@@ -545,7 +545,6 @@ export function init() {
       description:
         "Adds a DODGE/QUIT button to champion select: DODGE with the estimated LP loss for ranked queues, QUIT for every other mode. Hidden when the client already shows its own QUIT button.",
       version,
-      defaultEnabled: true,
       onEnable,
       onDisable,
     });

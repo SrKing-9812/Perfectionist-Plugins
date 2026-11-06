@@ -632,7 +632,6 @@ export function init() {
       name: "Ban Blocker",
       description: "During bans, blocking a teammate instantly claims the champion they hover to ban.",
       version,
-      defaultEnabled: true,
       onEnable,
       onDisable,
     });
