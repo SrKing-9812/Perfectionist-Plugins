@@ -75,24 +75,10 @@ Built for [Pengu Loader](https://pengu.lol)
   </tr>
   <tr>
     <td>
-      Debloats the client without changing how it looks or behaves: telemetry and analytics calls are dropped,
-      duplicate requests are merged, and immutable payloads (game-data assets and rune definitions) are cached
-      instead of re-downloaded and re-parsed every time a screen renders.
-      <br><br>
-      Everything it does on the page runs in idle slices instead of blocking navigation: image decode marking is
-      batched, the client phase comes from the client's own events rather than a timer, and the in-game un-gate pass
-      reads the page once with a single query and backs off to one check every five seconds once it has nothing left
-      to unlock.
-      <br><br>
-      It also keeps the social panel, friend requests and settings usable while a game is running, and repairs the
-      champ-select data race after a client reload so the ban list is still populated.
+      Debloats the client without changing how it looks or behaves and fixes bugs.
       <br><br>
       For weaker machines there is one optional switch, <b>Performance mode</b>, which drops background blur,
       decorative animation and looping background video. Leave it off and the client is pixel-identical.
-      <br><br>
-      <b>Diagnostics</b> is a separate opt-in switch, off by default. It keeps an in-memory tally of long tasks,
-      screen settle times, requests and heap samples and has a <b>Copy report</b> button. Nothing is sent over the
-      network and the report contains no account, summoner, token or LCU data.
     </td>
   </tr>
 </table>
