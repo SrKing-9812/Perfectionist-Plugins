@@ -61,6 +61,20 @@ const BUNDLED_MODULES = [
     version: "1.2.0",
     description: "Automatically marks quests, loot, Clash, TFT and client notices as read so no badge or dot stays lit.",
   },
+  {
+    id: "auto-accept",
+    file: "auto-accept.js",
+    name: "Auto Accept",
+    version: "1.1.0",
+    description: "Accepts the ready check automatically, with an optional delay and a native switch in the lobby footer.",
+  },
+  {
+    id: "dodge-helper",
+    file: "dodge-helper.js",
+    name: "Dodge Helper",
+    version: "1.4.0",
+    description: "Adds a DODGE/QUIT button to champion select: DODGE with the estimated LP loss for ranked queues, QUIT for every other mode.",
+  },
 ];
 
 const STYLE_CSS = `
