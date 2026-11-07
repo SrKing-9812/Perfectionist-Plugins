@@ -30,21 +30,21 @@ const BUNDLED_MODULES = [
     id: "ban-blocker",
     file: "ban-blocker.js",
     name: "Ban Blocker",
-    version: "3.6.2",
+    version: "3.6.6",
     description: "Adds a BLOCK button to your teammates in champ select. While a teammate is blocked, the champion they are about to ban is prepicked for you, so their ban can never land on it.",
   },
   {
     id: "unlock-profile-skins",
     file: "unlock-profile-skins.js",
     name: "Unlock Profile Skins",
-    version: "1.2.4",
+    version: "1.2.6",
     description: "Shows every skin as unlocked in the Set profile background window, event skins included, so you can pick any skin as your profile background.",
   },
   {
     id: "hide-unowned-skins",
     file: "hide-unowned-skins.js",
     name: "Hide Unowned Skins",
-    version: "2.4.3",
+    version: "2.4.5",
     description: "In champ select, the skin carousel only shows the skins you own for the champion you picked.",
   },
   {
@@ -58,7 +58,7 @@ const BUNDLED_MODULES = [
     id: "dodge-helper",
     file: "dodge-helper.js",
     name: "Dodge Helper",
-    version: "1.4.3",
+    version: "1.4.13",
     description: "Adds a DODGE/QUIT button to champ select, showing the LP and queue penalty for the next dodge.",
   },
   {
@@ -384,6 +384,7 @@ function isInstalled(mod) {
 }
 
 function moduleUrl(file) {
+  if (coords?.moduleBase) return new URL(file, coords.moduleBase).href;
   return `${CDN}/${PKG}@${runningVersion}/${file}`;
 }
 

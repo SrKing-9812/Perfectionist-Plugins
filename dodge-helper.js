@@ -1,5 +1,5 @@
 const PLUGIN_ID = "dodge-helper";
-export const version = "1.4.3";
+export const version = "1.4.14";
 
 const PHASE_URI = "/lol-gameflow/v1/gameflow-phase";
 const SESSION_URI = "/lol-gameflow/v1/session";
@@ -7,8 +7,8 @@ const CHAMP_SELECT_URI = "/lol-champ-select/v1/session";
 const TIMER_URI = "/lol-champ-select/v1/session/timer";
 const SUMMONER_URI = "/lol-summoner/v1/current-summoner";
 const RANKED_STATS_URI = "/lol-ranked/v1/current-ranked-stats";
-const DODGE_URI = "/lol-gameflow/v1/session/dodge";
-const QUIT_URI = "/lol-lobby-team-builder/champ-select/v1/session/quit";
+const QUIT_V2_URI = '/lol-login/v1/session/invoke?destination=lcdsServiceProxy&method=call&args=["","teambuilder-draft","quitV2",""]';
+const CUSTOM_CANCEL_URI = "/lol-lobby/v1/lobby/custom/cancel-champ-select";
 const STORE_KEY = "perfectionist:dodge-helper:accounts:v1";
 const PENDING_KEY = "perfectionist:dodge-helper:pending:v1";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -43,15 +43,30 @@ const GAME_PHASES = new Set([
 
 const CSS = `
 #${LAYER_ID} {
-  position: fixed !important; inset: 0 !important; z-index: 99999 !important;
+  position: fixed !important; inset: 0 !important; z-index: 100 !important;
   pointer-events: none !important;
 }
 #${ROOT_ID} {
   position: fixed !important; display: flex !important; align-items: flex-end !important;
-  justify-content: center !important; width: 125px !important; height: 32px !important;
+  justify-content: center !important; width: 114px !important; height: 32px !important;
   pointer-events: auto !important; z-index: 1 !important;
 }
-#${ROOT_ID} lol-uikit-flat-button { width: 125px !important; height: 32px !important; }
+#${ROOT_ID} .perf-dodge-button {
+  width: 100% !important; height: 32px !important; box-sizing: border-box !important;
+  appearance: none !important; -webkit-appearance: none !important; border-radius: 0 !important;
+  padding: 0 !important; border: 1px solid #785a28 !important;
+  background: linear-gradient(to bottom, #1e2328 0%, #11161c 55%, #0a0e12 100%) !important;
+  color: #cdbe91 !important; font-family: var(--font-display, "Beaufort for LOL", serif) !important;
+  font-size: 13px !important; font-weight: 700 !important; letter-spacing: 1px !important;
+  text-transform: uppercase !important; cursor: pointer !important;
+  text-shadow: 0 1px 2px #000 !important;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(240, 230, 210, 0.12) !important;
+}
+#${ROOT_ID} .perf-dodge-button:hover {
+  color: #f0e6d2 !important; border-color: #c89b3c !important;
+  background: linear-gradient(to bottom, #2a3038 0%, #192027 55%, #0e141a 100%) !important;
+}
+#${ROOT_ID} .perf-dodge-button:disabled { opacity: 0.6 !important; cursor: default !important; }
 #${ROOT_ID} .perf-dodge-cost {
   position: absolute !important; left: 50% !important; bottom: calc(100% + 4px) !important;
   transform: translateX(-50%) !important; box-sizing: border-box !important;
@@ -399,24 +414,20 @@ function build() {
   const cost = document.createElement("div");
   cost.id = COST_ID;
   cost.className = "perf-dodge-cost";
-  const button = document.createElement("lol-uikit-flat-button");
+  const button = document.createElement("button");
+  button.type = "button";
   button.id = BUTTON_ID;
+  button.className = "perf-dodge-button";
+  button.textContent = "DODGE";
   bindButton(button);
   root.append(cost, button);
   return root;
 }
 
 function bindButton(button) {
-  if (!button) return;
-  if (!button.__perfClickBound) {
-    button.__perfClickBound = true;
-    button.addEventListener("click", onButtonClick, true);
-  }
-  const inner = button.shadowRoot?.querySelector(".lol-uikit-flat-button");
-  if (inner && !inner.__perfClickBound) {
-    inner.__perfClickBound = true;
-    inner.addEventListener("click", onButtonClick);
-  }
+  if (!button || button.__perfClickBound) return;
+  button.__perfClickBound = true;
+  button.addEventListener("click", onButtonClick);
 }
 
 function onButtonClick(event) {
@@ -470,19 +481,30 @@ function positionRoot() {
   const root = document.getElementById(ROOT_ID);
   if (!root) return;
   const footer = visibleFooter();
-  const width = root.offsetWidth || 125;
   const height = root.offsetHeight || 32;
-  if (footer && footer.left > width + 24) {
-    root.style.left = `${Math.round(footer.left - width - 10)}px`;
-    root.style.top = `${Math.round(Math.min(window.innerHeight - height - 8, Math.max(8, footer.bottom - height)))}px`;
-    root.style.right = "auto";
+  if (footer) {
+    const footerElement = document.querySelector(FOOTER_SELECTOR);
+    const chat = footerElement?.querySelector("lol-social-chat-toggle-button");
+    const voice = footerElement?.querySelector(".champ-select-voice-button-wrapper");
+    const chatRect = chat?.getBoundingClientRect();
+    const voiceRect = voice?.getBoundingClientRect();
+    const left = chatRect?.left;
+    const rightEdge = voiceRect?.right ?? footer.right;
+    const width = left && rightEdge > left ? Math.round(rightEdge - left) : 114;
+    const right = Math.round(Math.max(8, window.innerWidth - rightEdge));
+    const top = Math.round(Math.max(8, footer.top - height - 8));
+    root.style.width = `${width}px`;
+    root.style.left = "auto";
+    root.style.right = `${right}px`;
+    root.style.top = `${top}px`;
     root.style.bottom = "auto";
     return;
   }
+  root.style.width = "114px";
   root.style.left = "auto";
   root.style.top = "auto";
-  root.style.right = "145px";
-  root.style.bottom = "21px";
+  root.style.right = "20px";
+  root.style.bottom = "76px";
 }
 
 function schedulePosition() {
@@ -698,14 +720,30 @@ function handleTimer(raw) {
   syncTimer(raw);
 }
 
+async function requestDodge(uri) {
+  const options = { method: "POST" };
+  if (uri === QUIT_V2_URI) options.body = '["","teambuilder-draft","quitV2",""]';
+  const response = await fetch(uri, options);
+  if (!response.ok) throw new Error(`LCU ${uri} responded ${response.status}`);
+  return response;
+}
+
 async function quitOrDodge() {
   if (!active || dodging || !state.queueId || isCustomQueue() || state.showQuitButton) return;
   dodging = true;
   render();
-  const ranked = RANKED_QUEUES.has(Number(state.queueId));
-  const uri = ranked ? DODGE_URI : QUIT_URI;
   try {
-    await api.lcu.send("POST", uri);
+    let sent = false;
+    let lastError = null;
+    for (const uri of [QUIT_V2_URI, CUSTOM_CANCEL_URI]) {
+      try {
+        await requestDodge(uri);
+        sent = true;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!sent) throw lastError ?? new Error("No dodge endpoint accepted the request");
     await recordDodge();
   } catch (error) {
     console.warn("[Dodge Helper] quit failed:", error);

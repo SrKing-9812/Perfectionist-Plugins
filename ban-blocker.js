@@ -1,4 +1,4 @@
-export const version = "3.6.2";
+export const version = "3.6.6";
 
 const PLUGIN_ID = "ban-blocker";
 const STYLE_ID = "perfectionist-ban-blocker-style";
@@ -28,7 +28,8 @@ const CSS = `
   right: -2px !important;
   left: auto !important;
   bottom: auto !important;
-  z-index: 2 !important;
+  z-index: 50 !important;
+  pointer-events: auto !important;
 }
 .swap-button-component.${BTN_CLASS} .icon {
   -webkit-mask-image: url("${BAN_GLYPH}") !important;
@@ -65,6 +66,7 @@ let uiScheduled = false;
 let lastDetect = -Infinity;
 
 const enabled = new Map();
+const blockedCellIds = new Set();
 const alias = new Map();
 const fetchedNames = new Set();
 const playerNames = new Map();
@@ -232,7 +234,9 @@ function decide(s) {
   }
   myActionId = myPick ? myPick.id : null;
 
-  const blockedCells = new Set(m.filter((p) => isBlocked(cellToPlayer.get(p.cellId))).map((p) => p.cellId));
+  const blockedCells = new Set(
+    m.filter((p) => blockedCellIds.has(p.cellId) || isBlocked(cellToPlayer.get(p.cellId))).map((p) => p.cellId),
+  );
 
   let threat = 0;
   for (const a of actions) {
@@ -264,6 +268,7 @@ function onSessionGone() {
   lastSession = null;
   goneAway = true;
   uiVisible = false;
+  blockedCellIds.clear();
   swapSeen.clear();
   removeButtons();
   if (!goneTimer) {
@@ -378,22 +383,29 @@ function bindRowsToTeam(session) {
   const selfIdx = list.findIndex((r) => isSelfRow(r));
   const selfCellIdx =
     session?.localPlayerCellId != null ? cells.findIndex((c) => c.cellId === session.localPlayerCellId) : -1;
+
+  // The DOM can label allied rows 0-4 while the session uses cell IDs 5-9 (red side).
+  // If every row still has a unique matching cell, slot IDs are reliable; otherwise
+  // align by the local row's position in myTeam, then fall back to row order.
+  const bySlot = list.map((r) =>
+    r.slotId != null ? cells.find((c) => c.cellId === r.slotId) ?? null : null,
+  );
+  const slotMapComplete =
+    bySlot.every(Boolean) && new Set(bySlot.map((c) => c.cellId)).size === list.length;
   let pick;
-  if (selfIdx >= 0 && selfCellIdx >= 0) {
-    const selfSlot = list[selfIdx].slotId;
-    if (selfSlot != null && selfSlot === cells[selfCellIdx].cellId) {
-      pick = (r) => (r.slotId != null ? cells.find((c) => c.cellId === r.slotId) : null);
-    } else if (selfIdx === selfCellIdx) {
-      pick = (r) => (r.slotId != null ? cells[r.slotId] : null) ?? cells[r.index];
-    } else {
-      pick = () => null;
-    }
+  if (slotMapComplete) {
+    pick = (r) => bySlot[r.index] ?? null;
   } else {
-    pick = (r) => (r.slotId != null ? cells.find((c) => c.cellId === r.slotId) : null);
+    const shift = selfIdx >= 0 && selfCellIdx >= 0 ? selfCellIdx - selfIdx : 0;
+    pick = (r) => cells[r.index + shift] ?? null;
   }
 
   for (const r of list) {
-    const cell = pick(r) ?? cells.find((c) => nameMatches(r.name, keyOf(c)));
+    const rowName = norm(r.name);
+    const cell =
+      pick(r) ??
+      cells.find((c) => rowName && (norm(c.summonerName) === rowName || payloadName(c) === rowName)) ??
+      cells.find((c) => nameMatches(r.name, keyOf(c)));
     if (cell) {
       r.cell = cell.cellId;
       r.player = linkPlayer(cell, r.name, cell.cellId);
@@ -410,23 +422,56 @@ function stopEvent(e) {
   e.preventDefault();
 }
 
+function cellForRow(r) {
+  if (!r) return null;
+  if (r.cell != null) return r.cell;
+  const cells = lastSession?.myTeam ?? [];
+  if (!cells.length) return r.slotId ?? null;
+  const direct = r.slotId != null ? cells.find((c) => c.cellId === r.slotId) : null;
+  if (direct) return direct.cellId;
+  const selfIdx = rows.findIndex((x) => isSelfRow(x));
+  const selfCellIdx =
+    lastSession?.localPlayerCellId != null
+      ? cells.findIndex((c) => c.cellId === lastSession.localPlayerCellId)
+      : -1;
+  const shift = selfIdx >= 0 && selfCellIdx >= 0 ? selfCellIdx - selfIdx : 0;
+  return cells[r.index + shift]?.cellId ?? cells[r.index]?.cellId ?? null;
+}
+
+function badgeCell(btn) {
+  const rowEl = btn.closest(".summoner-object");
+  const r = rowEl ? rows.find((x) => x.el === rowEl) : rows[Number(btn.dataset.slot)];
+  const cell = cellForRow(r) ?? (btn.dataset.cell ? Number(btn.dataset.cell) : null);
+  return cell == null ? null : Number(cell);
+}
+
 function playerForBadge(btn) {
   const rowEl = btn.closest(".summoner-object");
   const r = rowEl ? rows.find((x) => x.el === rowEl) : rows[Number(btn.dataset.slot)];
-  const byCell = btn.dataset.cell ? cellToPlayer.get(Number(btn.dataset.cell)) ?? null : null;
+  const cell = badgeCell(btn);
+  const member = cell == null ? null : (lastSession?.myTeam ?? []).find((p) => p.cellId === cell);
+  if (member) {
+    const id = linkPlayer(member, r?.name, cell);
+    cellToPlayer.set(cell, id);
+    return canonOf(id);
+  }
+  const byCell = cell == null ? null : cellToPlayer.get(cell) ?? null;
   return canonOf(byCell ?? r?.player ?? null);
 }
 
 function toggle(btn) {
-  let id = playerForBadge(btn);
-  if (id == null && lastSession) {
+  if (lastSession) {
     bindRowsToTeam(lastSession);
-    id = playerForBadge(btn);
+    decide(lastSession);
   }
-  if (id == null) return;
+  const cell = badgeCell(btn);
   const myCell = lastSession?.localPlayerCellId;
-  if (myCell != null && btn.dataset.cell && Number(btn.dataset.cell) === myCell) return;
-  enabled.set(id, !isBlocked(id));
+  if (cell == null || (myCell != null && cell === myCell)) return;
+  const next = !blockedCellIds.has(cell);
+  if (next) blockedCellIds.add(cell);
+  else blockedCellIds.delete(cell);
+  const id = playerForBadge(btn);
+  if (id != null) enabled.set(id, next);
   renderButtons();
   if (lastSession) {
     decide(lastSession);
@@ -461,7 +506,12 @@ function isSelfRow(r) {
 }
 
 function rowKey(r) {
-  return String(r.slotId ?? r.cell ?? r.index);
+  return String(r.cell ?? r.slotId ?? r.index);
+}
+
+function buttonKey(r) {
+  const cell = r.cell ?? r.slotId;
+  return cell == null ? `row:${r.index}` : `cell:${cell}`;
 }
 
 function nativeSwapIn(circle) {
@@ -471,23 +521,25 @@ function nativeSwapIn(circle) {
 
 function ensureButtons() {
   const list = getRows();
+  const active = new Set();
   for (const r of list) {
     if (!r.circle || !r.circle.isConnected) r.circle = r.el.querySelector(".champion-icon-container");
     if (!r.circle || !r.circle.isConnected) continue;
-    const key = rowKey(r);
-    let btn = buttons.get(r.index);
+    const swapKey = rowKey(r);
+    const key = buttonKey(r);
+    let btn = buttons.get(key);
     if (isSelfRow(r)) {
       if (btn) {
         btn.remove();
-        buttons.delete(r.index);
+        buttons.delete(key);
       }
       continue;
     }
-    if (nativeSwapIn(r.circle)) swapSeen.add(key);
-    if (!swapSeen.has(key)) {
+    if (nativeSwapIn(r.circle)) swapSeen.add(swapKey);
+    if (!swapSeen.has(swapKey)) {
       if (btn) {
         btn.remove();
-        buttons.delete(r.index);
+        buttons.delete(key);
       }
       continue;
     }
@@ -496,16 +548,17 @@ function ensureButtons() {
       for (const orphan of r.circle.querySelectorAll(`:scope > .${BTN_CLASS}`)) orphan.remove();
       btn = buildBadge(r.index);
       r.circle.appendChild(btn);
-      buttons.set(r.index, btn);
+      buttons.set(key, btn);
     }
+    active.add(key);
     btn.dataset.slot = String(r.index);
-    const cell = r.cell ?? r.slotId;
+    const cell = cellForRow(r);
     btn.dataset.cell = cell == null ? "" : String(cell);
   }
-  for (const [slot, btn] of [...buttons]) {
-    if (!list[slot] || !btn.isConnected) {
+  for (const [key, btn] of [...buttons]) {
+    if (!active.has(key) || !btn.isConnected) {
       btn.remove();
-      buttons.delete(slot);
+      buttons.delete(key);
     }
   }
 }
@@ -514,7 +567,8 @@ function renderButtons() {
   const hasSession = !!lastSession?.myTeam;
   for (const [, btn] of buttons) {
     const id = playerForBadge(btn);
-    const on = id != null && isBlocked(id);
+    const cell = badgeCell(btn);
+    const on = (cell != null && blockedCellIds.has(cell)) || (id != null && isBlocked(id));
     btn.classList.toggle("on", on);
     btn.classList.toggle("unresolved", id == null && hasSession);
     const title = on ? "Blocked — click to allow their bans" : "Block this teammate's bans";
@@ -640,6 +694,7 @@ function onDisable() {
   failCount.clear();
   cellToPlayer.clear();
   enabled.clear();
+  blockedCellIds.clear();
   playerNames.clear();
   alias.clear();
   fetchedNames.clear();

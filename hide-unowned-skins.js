@@ -1,4 +1,4 @@
-export const version = "2.4.3";
+export const version = "2.4.5";
 
 const PLUGIN_ID = "hide-unowned-skins";
 const STYLE_ID = "perfectionist-hide-unowned-skins-style";
@@ -27,7 +27,7 @@ const OBSERVER_OPTIONS = {
   attributeFilter: ["src"],
 };
 
-const FILTER_VERSION = "2.4.3";
+const FILTER_VERSION = "2.4.5";
 const FILTER_STATE_KEY = "__perfSkinFilterState";
 const filterState = (globalThis[FILTER_STATE_KEY] ??= { active: true });
 
@@ -69,7 +69,7 @@ function installArrayFilter() {
   const nativeFilter = proto.filter;
   const wrapped = function (callback, thisArg) {
     const result = nativeFilter.call(this, callback, thisArg);
-    if (!filterState.active || !isSkinCollection(result)) return result;
+    if (!filterState.active || currentChampionId === null || !isSkinCollection(result)) return result;
     let changed = false;
     if (!skinShapeKeys) learnSkinShape(result);
     const kept = nativeFilter.call(result, (skin) => {
@@ -109,7 +109,7 @@ function isOwnedSkin(skin) {
 }
 
 function filterSkinList(list) {
-  if (!Array.isArray(list)) return null;
+  if (!Array.isArray(list) || currentChampionId === null) return null;
   if (!skinShapeKeys && isSkinCollection(list)) learnSkinShape(list);
   let changed = false;
   const filtered = list
@@ -133,7 +133,7 @@ function recordClientOrder(list) {
 }
 
 function rewriteWebSocketFrame(text) {
-  if (!filterState.active || typeof text !== "string") return null;
+  if (!filterState.active || currentChampionId === null || typeof text !== "string") return null;
   if (text.indexOf("skin-carousel-skins") === -1) return null;
   let frame;
   try {
@@ -237,7 +237,7 @@ function installFetchFilter() {
           ? input.href
           : "";
     const promise = original.call(this, input, init);
-    if (!filterState.active || url.split("?")[0].indexOf(CAROUSEL_URI) === -1) return promise;
+    if (!filterState.active || currentChampionId === null || url.split("?")[0].indexOf(CAROUSEL_URI) === -1) return promise;
     return promise.then((response) => {
       if (!response || !response.ok) return response;
       let body;
@@ -288,7 +288,7 @@ function installXhrFilter() {
       const cache = { raw: null, filtered: null };
       const filteredText = () => {
         const raw = textDescriptor.get.call(xhr);
-        if (!filterState.active) return raw;
+        if (!filterState.active || currentChampionId === null) return raw;
         if (cache.filtered === null || cache.raw !== raw) {
           cache.raw = raw;
           cache.filtered = raw;
@@ -436,6 +436,7 @@ function scheduleApply() {
   requestAnimationFrame(() => {
     applyQueued = false;
     ensureSourceFilter();
+    if (currentChampionId === null) return;
     const item = document.querySelector(SKIN_ITEM_SELECTOR);
     if (!item && !document.querySelector(DOT_SELECTOR)) return;
     applyAll();

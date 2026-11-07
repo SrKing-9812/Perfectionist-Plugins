@@ -1,4 +1,4 @@
-export const version = "1.2.4";
+export const version = "1.2.6";
 
 const PLUGIN_ID = "unlock-profile-skins";
 const PICKER_BUTTON_SELECTOR = ".style-profile-skin-picker-button";
@@ -39,8 +39,39 @@ function logError(scope, error) {
   console.error(`[Perfectionist] Unlock Profile Skins: ${scope}`, error);
 }
 
+const PICKER_ARM_MS = 5000;
+let pickerArmUntil = 0;
+let pickerArmTimer = null;
+
 function isPickerOpen() {
-  return document.querySelector(PICKER_BUTTON_SELECTOR) !== null;
+  for (const dialog of document.querySelectorAll("lol-uikit-dialog-frame")) {
+    const rect = dialog.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    if (/set profile background/i.test(dialog.textContent || "")) return true;
+  }
+  return false;
+}
+
+function shouldFilter() {
+  return filterActive && (isPickerOpen() || Date.now() < pickerArmUntil);
+}
+
+function armPicker() {
+  pickerArmUntil = Date.now() + PICKER_ARM_MS;
+  if (pickerArmTimer !== null) clearTimeout(pickerArmTimer);
+  const waitForPicker = () => {
+    if (isPickerOpen()) {
+      pickerArmTimer = null;
+      startTierGrouping();
+      return;
+    }
+    if (Date.now() >= pickerArmUntil) {
+      pickerArmTimer = null;
+      return;
+    }
+    pickerArmTimer = setTimeout(waitForPicker, 100);
+  };
+  pickerArmTimer = setTimeout(waitForPicker, 50);
 }
 
 function cleanPath(url) {
@@ -386,7 +417,7 @@ function ensureSummonerId() {
     });
 }
 function rewriteInventoryText(raw) {
-  if (typeof raw !== "string") return raw;
+  if (!shouldFilter() || typeof raw !== "string") return raw;
   if (inventoryTextCache.has(raw)) {
     const cached = inventoryTextCache.get(raw);
     inventoryTextCache.delete(raw);
@@ -406,7 +437,7 @@ function rewriteInventoryText(raw) {
 }
 
 function rewriteWebSocketFrame(text) {
-  if (!filterActive || typeof text !== "string") return null;
+  if (!shouldFilter() || typeof text !== "string") return null;
   const targetFrame = text.indexOf("lol-champions/v1/inventories") !== -1;
   const augmentFrame = text.indexOf("SKIN_AUGMENT") !== -1;
   if (!targetFrame && !augmentFrame) return null;
@@ -512,12 +543,12 @@ function installFetchFilter() {
     const inventory = pathIdOf(url) !== null;
     const augmentRequest = isAugmentUrl(url);
     let options = init;
-    if (filterActive && options && typeof options.body === "string") {
+    if (shouldFilter() && options && typeof options.body === "string") {
       const mapped = remapVariantIds(options.body);
       if (mapped !== options.body) options = { ...options, body: mapped };
     }
     const promise = original.call(this, input, options);
-    if (!filterActive || (!inventory && !augmentRequest)) return promise;
+    if (!shouldFilter() || (!inventory && !augmentRequest)) return promise;
     if (inventory) maybeRefreshSummoner();
 
     return whenSummonerKnown(SUMMONER_WAIT_MS).then(() => {
@@ -594,13 +625,13 @@ function installXhrFilter() {
     const url = this.__perfProfileUrl || "";
     const target = isTargetUrl(url);
     const augment = !target && isAugmentUrl(url);
-    if (filterActive && pathIdOf(url) !== null) maybeRefreshSummoner();
-    if (filterActive && typeof args[0] === "string") {
+    if (shouldFilter() && pathIdOf(url) !== null) maybeRefreshSummoner();
+    if (shouldFilter() && typeof args[0] === "string") {
       const mapped = remapVariantIds(args[0]);
       if (mapped !== args[0]) args = [mapped, ...args.slice(1)];
     }
     const xhr = this;
-    if (target && filterActive && augmentIds.size === 0 && textDescriptor && textDescriptor.get) {
+    if (target && shouldFilter() && augmentIds.size === 0 && textDescriptor && textDescriptor.get) {
       const latch = new Promise((resolve) => {
         const finish = () => {
           if (augmentIds.size === 0) {
@@ -619,7 +650,7 @@ function installXhrFilter() {
     }
     if (textDescriptor && textDescriptor.get && (pathIdOf(url) !== null || augment)) {
       const cache = { raw: null, gate: null, filtered: null };
-      const gateOpen = () => filterActive && (augment || isTargetUrl(url));
+      const gateOpen = () => shouldFilter() && (augment || isTargetUrl(url));
       const rewriteBody = (json) => (augment ? unlockAugmentInventory(json) : unlockDeep(json));
       const filteredText = () => {
         const gate = gateOpen();
@@ -653,7 +684,7 @@ function installXhrFilter() {
         });
       }
     }
-    if (augment && filterActive && augmentIds.size === 0) {
+    if (augment && shouldFilter() && augmentIds.size === 0) {
       const sendArgs = args;
       ensureAugmentIds().finally(() => {
         try {
@@ -693,11 +724,10 @@ function onEnable(utils) {
   filterActive = true;
   ensureSourceFilter();
   ensureSummonerId();
-  tierArmListener = () => {
-    if (tierObserver) return;
-    setTimeout(() => {
-      if (tierArmListener && isPickerOpen()) startTierGrouping();
-    }, 0);
+  tierArmListener = (event) => {
+    const target = event.target instanceof Element ? event.target.closest(PICKER_BUTTON_SELECTOR) : null;
+    if (!target) return;
+    armPicker();
   };
   document.addEventListener("click", tierArmListener, true);
   if (isPickerOpen()) startTierGrouping();
@@ -708,6 +738,9 @@ function onDisable() {
   inventoryTextCache.clear();
   if (tierArmListener) document.removeEventListener("click", tierArmListener, true);
   tierArmListener = null;
+  if (pickerArmTimer !== null) clearTimeout(pickerArmTimer);
+  pickerArmTimer = null;
+  pickerArmUntil = 0;
   stopTierGrouping();
   api = null;
 }
