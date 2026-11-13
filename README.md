@@ -18,14 +18,14 @@ Built for [Pengu Loader](https://pengu.lol)
 
 | Plugin | What it does |
 | --- | --- |
-| 🚀 **BetterClient** | Makes the client lighter and smoother without changing how it looks or behaves. Cuts tracking and repeated requests and fixes small bugs. For weaker PCs there is one optional switch, **Performance mode**, which drops background blur, decorative animation and looping background video. Leave it off and the client is pixel-identical. |
-| 🛡️ **Ban Blocker** | Adds a **BLOCK** button to your teammates in champ select. While a teammate is blocked, the champion they are about to ban is prepicked for you on your own pick turn, so their ban can never land on it. |
-| 🔓 **Unlock Profile Skins** | In the **Set profile background** window, every skin shows as unlocked, even event skins (Signature). Browse the full list and pick any skin you like. |
-| 🎨 **Hide Unowned Skins** | In champ select, the skin carousel only shows the skins you own for the champion you picked. The arrows and dots only move through owned skins, and the ones that are left keep their normal spacing. |
+| 🚀 **BetterClient** | Makes the client lighter and smoother without changing how it looks. Optional **Performance mode** for weaker PCs. |
+| 🛡️ **Ban Blocker** | Adds a **BLOCK** button to teammates in champ select. A blocked teammate can't ban the champion they hover. |
+| 🔓 **Unlock Profile Skins** | Unlocks every skin in the **Set profile background** window. |
+| 🎨 **Hide Unowned Skins** | Shows only the skins you own in the champ select skin carousel. |
 | ✅ **Auto Accept** | Accepts the match for you when the ready check pops up. |
-| 🚪 **Dodge Helper** | Adds a **DODGE** button in ranked Solo/Duo and Flex and a **QUIT** button in other modes, with the LP and queue-penalty cost of the next dodge. |
-| 🎁 **Auto Claimer** | Claims rewards for you the moment they become claimable: event tracks, missions and the TFT Battle Pass. Three optional extras: auto-buy shop items Riot lists for 1 BE, auto-open mystery loot (icons, ward skins), and auto-open chests with keys. |
-| 📬 **Auto Read** | Marks quests, loot, Clash, TFT and client notices as read, so no badge or dot stays lit. |
+| 🚪 **Dodge Helper** | Adds a **DODGE** button to champ select showing the LP and lockout your next dodge costs. |
+| 🎁 **Auto Claimer** | Claims event, mission and TFT pass rewards as soon as they're ready. Can also buy 1 BE items and open loot. |
+| 📬 **Auto Read** | Marks quests, loot and client notices as read, so no badge stays lit. |
 
 ## Install
 

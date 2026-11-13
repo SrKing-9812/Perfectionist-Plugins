@@ -1,152 +1,87 @@
-export const version = "1.2.6";
+export const version = "2.0.0";
 
 const PLUGIN_ID = "unlock-profile-skins";
-const PICKER_BUTTON_SELECTOR = ".style-profile-skin-picker-button";
-const CURRENT_SUMMONER_URI = "/lol-summoner/v1/current-summoner";
-const INVENTORY_PATH = /^\/lol-champions\/v1\/inventories\/(\d+)\/champions$/;
-const AUGMENT_INVENTORY_PATH = /^\/lol-inventory\/v2\/inventory\/SKIN_AUGMENT$/i;
-const SUMMONER_TTL = 10 * 60 * 1000;
-const SUMMONER_WAIT_MS = 1200;
-const STATE_KEY = "perfectionist-plugins:state";
+
+// The "Set profile background" window is the rcp-fe-lol-skins-picker client plugin, and nothing else in the
+// client uses it. Its data binding is private to it, so unlocking the data there changes this window only:
+// Collection, champ select, the store and loot keep seeing the real inventory.
+const PICKER_PLUGIN = "rcp-fe-lol-skins-picker";
+const CHAMPIONS_PATH = /^\/lol-champions\/v1\/inventories\/\d+\/champions$/;
+const MINIMAL_PATH = /^\/lol-champions\/v1\/inventories\/\d+\/champions-minimal$/;
+const AUGMENTS_PATH = /^\/lol-inventory\/v2\/inventory\/SKIN_AUGMENT$/i;
+const GROUPING_SELECTOR = ".flyout-component lol-uikit-framed-dropdown.control-panel-grouping-options";
+const TRANSLATIONS_URI = "/fe/lol-skins-picker/trans.json";
+const TIER_KEY = "control_panel_grouping_by_tier";
+
 const FAKE_PURCHASE_DATE = 1577836800000;
 const FAKE_RENTAL_END = 4102444800000;
-const TIER_LABEL = "tier";
-const GROUPING_OPTIONS = "lol-uikit-dropdown-option";
-const HARVEST_WAIT_MS = 2000;
-const INVENTORY_TEXT_CACHE_LIMIT = 2;
+const SHADOW_CHAMPION_ID = 60000;
 
-let filterActive = true;
 let api = null;
-let summonerId = null;
-let summonerPending = false;
-let rawFetch = null;
-let harvestPromise = null;
+let active = false;
+let handles = [];
+let unwatchGrouping = null;
+let pickerApi = null;
+let pickerSelectSkin = null;
+let tierLabel = null;
 const augmentIds = new Set();
-const pendingTargetLoads = new Set();
 const variantIdRemap = new Map();
-const inventoryTextCache = new Map();
-
-function readDefaultEnabled() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(STATE_KEY) || "{}");
-    return saved.enabled?.[PLUGIN_ID] !== false;
-  } catch {
-    return true;
-  }
-}
 
 function logError(scope, error) {
-  console.error(`[Perfectionist] Unlock Profile Skins: ${scope}`, error);
+  console.error(`[Perfectionism] Unlock Profile Skins: ${scope}`, error);
 }
 
-const PICKER_ARM_MS = 5000;
-let pickerArmUntil = 0;
-let pickerArmTimer = null;
-
-function isPickerOpen() {
-  for (const dialog of document.querySelectorAll("lol-uikit-dialog-frame")) {
-    const rect = dialog.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) continue;
-    if (/set profile background/i.test(dialog.textContent || "")) return true;
+function cloneData(value) {
+  try {
+    return structuredClone(value);
+  } catch {
+    return JSON.parse(JSON.stringify(value));
   }
-  return false;
 }
 
-function shouldFilter() {
-  return filterActive && (isPickerOpen() || Date.now() < pickerArmUntil);
-}
-
-function armPicker() {
-  pickerArmUntil = Date.now() + PICKER_ARM_MS;
-  if (pickerArmTimer !== null) clearTimeout(pickerArmTimer);
-  const waitForPicker = () => {
-    if (isPickerOpen()) {
-      pickerArmTimer = null;
-      startTierGrouping();
-      return;
-    }
-    if (Date.now() >= pickerArmUntil) {
-      pickerArmTimer = null;
-      return;
-    }
-    pickerArmTimer = setTimeout(waitForPicker, 100);
-  };
-  pickerArmTimer = setTimeout(waitForPicker, 50);
-}
-
-function cleanPath(url) {
-  let path = String(url ?? "").split("?")[0];
-  const origin = /^[a-z][a-z0-9+.-]*:\/\/[^/]+/i.exec(path);
-  if (origin) path = path.slice(origin[0].length) || "/";
-  return path;
-}
-
-function pathIdOf(url) {
-  const match = INVENTORY_PATH.exec(cleanPath(url));
-  return match ? Number(match[1]) : null;
-}
-
-function isTargetUrl(url) {
-  const id = pathIdOf(url);
-  return id !== null && summonerId !== null && id === summonerId;
-}
-
-function isAugmentUrl(url) {
-  return AUGMENT_INVENTORY_PATH.test(cleanPath(url));
-}
-
-function unlockOwnership(ownership) {
-  if (!ownership || typeof ownership !== "object") return false;
-  let changed = false;
-  const needsFakeDate = ownership.owned !== true || ownership.rental?.rented === true;
-  if (ownership.owned !== true) {
-    ownership.owned = true;
-    changed = true;
-  }
-  if (needsFakeDate) {
-    const rental = ownership.rental;
-    if (rental && typeof rental === "object") {
-      if (rental.purchaseDate !== FAKE_PURCHASE_DATE) {
-        rental.purchaseDate = FAKE_PURCHASE_DATE;
-        changed = true;
-      }
-      if (rental.endDate !== undefined && rental.endDate !== FAKE_RENTAL_END) {
-        rental.endDate = FAKE_RENTAL_END;
-        changed = true;
-      }
-    }
-    if (ownership.purchaseDate !== undefined && ownership.purchaseDate !== FAKE_PURCHASE_DATE) {
-      ownership.purchaseDate = FAKE_PURCHASE_DATE;
-      changed = true;
-    }
-  }
-  return changed;
-}
-
-function synthesizedOwnership() {
+function ownedRecord() {
   return {
     owned: true,
     loyaltyReward: false,
     xboxGPReward: false,
-    rental: { rented: false, purchaseDate: 0, endDate: 0, winCountRemaining: 0 },
+    rental: { rented: false, purchaseDate: FAKE_PURCHASE_DATE, endDate: 0, winCountRemaining: 0 },
   };
 }
 
-function harvestFromPayload(node) {
-  if (!node || typeof node !== "object") return;
-  const list = node.skinAugments?.augments;
-  if (Array.isArray(list)) {
-    for (const aug of list) {
-      if (aug && typeof aug.contentId === "string") augmentIds.add(aug.contentId);
-    }
+function unlockOwnership(ownership) {
+  if (!ownership || typeof ownership !== "object") return;
+  const wasOwned = ownership.owned === true && ownership.rental?.rented !== true;
+  ownership.owned = true;
+  if (wasOwned) return;
+  const rental = ownership.rental;
+  if (rental && typeof rental === "object") {
+    rental.rented = false;
+    rental.purchaseDate = FAKE_PURCHASE_DATE;
+    if (rental.endDate !== undefined) rental.endDate = FAKE_RENTAL_END;
   }
-  const values = Array.isArray(node) ? node : Object.values(node);
-  for (const value of values) {
-    if (value && typeof value === "object") harvestFromPayload(value);
+  if (ownership.purchaseDate !== undefined) ownership.purchaseDate = FAKE_PURCHASE_DATE;
+}
+
+function unlockItem(item) {
+  if (!item || typeof item !== "object") return;
+  if (item.ownership && typeof item.ownership === "object") unlockOwnership(item.ownership);
+  else if (typeof item.id === "number" || typeof item.contentId === "string") item.ownership = ownedRecord();
+  if (item.owned === false) item.owned = true;
+  if (item.unlocked === false) item.unlocked = true;
+}
+
+function unlockAugments(holder) {
+  const list = holder?.skinAugments?.augments;
+  if (!Array.isArray(list)) return;
+  for (const aug of list) {
+    if (!aug || typeof aug !== "object") continue;
+    if (typeof aug.contentId === "string") augmentIds.add(aug.contentId);
+    if (aug.ownership && typeof aug.ownership === "object") unlockOwnership(aug.ownership);
+    else aug.ownership = ownedRecord();
   }
 }
 
-function variantLabelFromOverlays(overlays) {
+function variantLabel(overlays) {
   for (const overlay of overlays || []) {
     const match = /splash_tile_([a-z0-9]+)\.png$/i.exec(String(overlay?.tileLCOverlayPath || ""));
     if (match) return match[1].charAt(0).toUpperCase() + match[1].slice(1);
@@ -154,600 +89,186 @@ function variantLabelFromOverlays(overlays) {
   return "Variant";
 }
 
+// Signature/event skins keep their colour variants as augments with tile overlays on one tier. Split each
+// overlay variant into its own tile so every variant can be picked; the fake ids are mapped back to the real
+// tier id when the profile saves the choice (see wrapSelectSkin).
 function splitVariantTiers(skin) {
-  const tiers = skin.questSkinInfo.tiers;
+  const tiers = skin?.questSkinInfo?.tiers;
+  if (!Array.isArray(tiers)) return;
   const parent = typeof skin.id === "number" ? skin.id : null;
   const taken = new Set(tiers.map((tier) => tier?.id));
   const out = [];
-  let changed = false;
   let sibling = 0;
   for (const tier of tiers) {
     out.push(tier);
     const augments = tier?.skinAugments?.augments;
     if (!Array.isArray(augments) || augments.length < 2) continue;
-    const withOverlays = augments.filter((aug) => Array.isArray(aug?.overlays) && aug.overlays.some((o) => o && o.tileLCOverlayPath));
-    const plain = augments.filter((aug) => withOverlays.indexOf(aug) === -1);
+    const withOverlays = augments.filter((aug) => Array.isArray(aug?.overlays) && aug.overlays.some((o) => o?.tileLCOverlayPath));
+    const plain = augments.filter((aug) => !withOverlays.includes(aug));
     if (withOverlays.length === 0 || plain.length === 0) continue;
     tier.skinAugments = { ...tier.skinAugments, augments: plain };
     for (const aug of withOverlays) {
-      let id = parent !== null ? parent + 1000000 * sibling : -(tier.id ?? 0) * 10 - sibling;
+      let id = parent !== null ? parent + 1000000 * (sibling + 1) : -((tier.id ?? 0) * 10) - sibling - 1;
       while (taken.has(id)) id += parent !== null ? 1000000 : -1;
       taken.add(id);
-      sibling++;
+      sibling += 1;
       variantIdRemap.set(id, tier.id);
       out.push({
         ...tier,
         id,
-        name: `${tier.name ?? ""} ${variantLabelFromOverlays(aug.overlays)}`.trim(),
+        name: `${tier.name ?? ""} ${variantLabel(aug.overlays)}`.trim(),
         skinAugments: { ...tier.skinAugments, augments: [aug] },
       });
-      changed = true;
     }
   }
-  if (changed) skin.questSkinInfo.tiers = out;
-  return changed;
+  skin.questSkinInfo.tiers = out;
 }
 
-function remapVariantIds(body) {
-  if (typeof body !== "string" || variantIdRemap.size === 0) return body;
-  let out = body;
-  for (const [from, to] of variantIdRemap) {
-    out = out.replace(new RegExp(`(["'\\[,:\\s])${from}(?![0-9])`, "g"), `$1${to}`);
+function unlockSkin(skin) {
+  unlockItem(skin);
+  unlockAugments(skin);
+  for (const chroma of Array.isArray(skin?.chromas) ? skin.chromas : []) {
+    unlockItem(chroma);
+    unlockAugments(chroma);
+  }
+  const tiers = skin?.questSkinInfo?.tiers;
+  if (Array.isArray(tiers)) {
+    for (const tier of tiers) {
+      unlockItem(tier);
+      unlockAugments(tier);
+    }
+    splitVariantTiers(skin);
+  }
+}
+
+function unlockChampions(data) {
+  if (!Array.isArray(data)) return data;
+  const before = augmentIds.size;
+  const out = cloneData(data).filter((champion) => !(typeof champion?.id === "number" && champion.id >= SHADOW_CHAMPION_ID));
+  for (const champion of out) {
+    if (!champion || typeof champion !== "object") continue;
+    // The picker copies the champion's ownership onto its base skin and every tier, so an unowned
+    // champion would hide all of its skins. Unlock the champion too (only inside this window).
+    unlockItem(champion);
+    for (const skin of Array.isArray(champion.skins) ? champion.skins : []) unlockSkin(skin);
+  }
+  if (augmentIds.size !== before) queueMicrotask(() => augmentHandle()?.reapply());
+  return out;
+}
+
+function unlockMinimal(data) {
+  if (!Array.isArray(data)) return data;
+  return cloneData(data)
+    .filter((champion) => !(typeof champion?.id === "number" && champion.id >= SHADOW_CHAMPION_ID))
+    .map((champion) => {
+      unlockItem(champion);
+      return champion;
+    });
+}
+
+function unlockAugmentInventory(data) {
+  if (!Array.isArray(data)) return data;
+  const out = cloneData(data);
+  const present = new Set();
+  for (const item of out) {
+    if (!item || typeof item !== "object") continue;
+    if (typeof item.uuid === "string") present.add(item.uuid);
+    item.owned = true;
+    if (item.ownershipType !== undefined) item.ownershipType = "OWNED";
+  }
+  for (const id of augmentIds) {
+    if (present.has(id)) continue;
+    out.push({ uuid: id, inventoryType: "SKIN_AUGMENT", ownershipType: "OWNED", owned: true, quantity: 1, purchaseDate: FAKE_PURCHASE_DATE });
   }
   return out;
 }
 
-function isShadowEntry(entry) {
-  if (!entry || typeof entry !== "object") return false;
-  if (Array.isArray(entry.skins)) return typeof entry.id === "number" && entry.id >= 60000;
-  return typeof entry.championId === "number" && entry.championId >= 60000 && typeof entry.id === "number";
+function augmentHandle() {
+  return handles[2] ?? null;
 }
 
-function unlockDeep(node) {
-  if (!node || typeof node !== "object") return false;
-  let changed = false;
-  if (Array.isArray(node)) {
-    for (let i = node.length - 1; i >= 0; i--) {
-      if (isShadowEntry(node[i])) {
-        node.splice(i, 1);
-        changed = true;
-      }
-    }
-  }
-  if (!Array.isArray(node) && node.questSkinInfo && Array.isArray(node.questSkinInfo.tiers)) {
-    changed = splitVariantTiers(node) || changed;
-  }
-  const augList = node.skinAugments?.augments;
-  if (Array.isArray(augList)) {
-    for (const aug of augList) {
-      if (!aug || typeof aug !== "object") continue;
-      if (typeof aug.contentId === "string") augmentIds.add(aug.contentId);
-      if (aug.ownership && typeof aug.ownership === "object") {
-        changed = unlockOwnership(aug.ownership) || changed;
-      } else {
-        aug.ownership = synthesizedOwnership();
-        changed = true;
-      }
-    }
-  }
-  const championNode = Array.isArray(node.skins);
-  if (!championNode) {
-    if (node.ownership && typeof node.ownership === "object") {
-      changed = unlockOwnership(node.ownership) || changed;
-    } else if (typeof node.contentId === "string" && Array.isArray(node.overlays)) {
-      node.ownership = synthesizedOwnership();
-      changed = true;
-    }
-    if (node.owned === false) {
-      node.owned = true;
-      changed = true;
-    }
-  }
-  const values = Array.isArray(node)
-    ? node
-    : Object.keys(node)
-        .filter((key) => key !== "ownership")
-        .map((key) => node[key]);
-  for (const value of values) {
-    if (value && typeof value === "object") changed = unlockDeep(value) || changed;
-  }
-  return changed;
+function remapId(id) {
+  const numeric = Number(id);
+  return variantIdRemap.has(numeric) ? variantIdRemap.get(numeric) : id;
 }
 
-function unlockAugmentInventory(items) {
-  if (!Array.isArray(items)) return false;
-  let changed = false;
-  const present = new Set();
-  for (const item of items) {
-    if (!item || typeof item !== "object") continue;
-    if (typeof item.uuid === "string") present.add(item.uuid);
-    if (item.owned !== true) {
-      item.owned = true;
-      changed = true;
-    }
-    if (item.ownershipType !== undefined && item.ownershipType !== "OWNED") {
-      item.ownershipType = "OWNED";
-      changed = true;
-    }
-  }
-  for (const id of augmentIds) {
-    if (present.has(id)) continue;
-    items.push({
-      uuid: id,
-      inventoryType: "SKIN_AUGMENT",
-      ownershipType: "OWNED",
-      owned: true,
-      quantity: 1,
-      purchaseDate: FAKE_PURCHASE_DATE,
-    });
-    changed = true;
-  }
-  return changed;
-}
-
-function ensureAugmentIds() {
-  if (augmentIds.size > 0) return Promise.resolve();
-  if (harvestPromise) return harvestPromise;
-  harvestPromise = (async () => {
-    const waits = [...pendingTargetLoads];
-    if (waits.length > 0) {
-      await Promise.race([
-        Promise.allSettled(waits),
-        new Promise((resolve) => setTimeout(resolve, HARVEST_WAIT_MS)),
-      ]);
-    }
-    if (augmentIds.size > 0) return;
-    try {
-      const get = rawFetch || ((...args) => window.fetch(...args));
-      let id = summonerId;
-      if (id === null) {
-        const response = await get(CURRENT_SUMMONER_URI);
-        const summoner = await response.json().catch(() => null);
-        id = typeof summoner?.summonerId === "number" ? summoner.summonerId : null;
-        if (id !== null) summonerId = id;
-      }
-      if (id === null) return;
-      const response = await get(`/lol-champions/v1/inventories/${id}/champions`);
-      const json = await response.json().catch(() => null);
-      if (json) harvestFromPayload(json);
-    } catch {}
-  })().finally(() => {
-    harvestPromise = null;
-  });
-  return harvestPromise;
-}
-
-let tierObserver = null;
-let tierAppliedForOpen = false;
-let tierDropdown = null;
-let tierArmListener = null;
-
-function findGroupingDropdown() {
-  for (const dd of document.querySelectorAll("lol-uikit-framed-dropdown")) {
-    const labels = [...dd.querySelectorAll(GROUPING_OPTIONS)].map((o) => o.textContent.trim().toLowerCase());
-    if (labels.includes("my collection") && labels.includes(TIER_LABEL)) return dd;
-  }
-  return null;
-}
-
-function applyTierGrouping() {
-  if (tierDropdown && !tierDropdown.isConnected) {
-    tierDropdown = null;
-    tierAppliedForOpen = false;
-  }
-  if (tierAppliedForOpen) return;
-  if (!isPickerOpen()) return;
-  const dd = tierDropdown ?? findGroupingDropdown();
-  if (!dd) {
-    tierAppliedForOpen = false;
-    return;
-  }
-  tierDropdown = dd;
-  const options = [...dd.querySelectorAll(GROUPING_OPTIONS)];
-  const tier = options.find((o) => o.textContent.trim().toLowerCase() === TIER_LABEL);
-  if (!tier) return;
-  const current = options.find((o) => o.hasAttribute("selected"));
-  if (current !== tier) tier.click();
-  tierAppliedForOpen = true;
-}
-
-function startTierGrouping() {
-  if (tierObserver) return;
-  tierObserver = new MutationObserver(() => {
-    if (!isPickerOpen()) {
-      stopTierGrouping();
-      return;
-    }
-    try {
-      applyTierGrouping();
-    } catch (error) {
-      logError("tier grouping failed.", error);
-    }
-  });
-  tierObserver.observe(document.documentElement ?? document, { childList: true, subtree: true });
-  applyTierGrouping();
-}
-
-function stopTierGrouping() {
-  tierObserver?.disconnect();
-  tierObserver = null;
-  tierAppliedForOpen = false;
-  tierDropdown = null;
-}
-
-function maybeRefreshSummoner() {
-  if (summonerId !== null || summonerPending || !isPickerOpen()) return;
-  ensureSummonerId();
-}
-
-function whenSummonerKnown(timeout) {
-  if (summonerId !== null) return Promise.resolve(true);
-  ensureSummonerId();
-  const deadline = Date.now() + timeout;
-  return new Promise((resolve) => {
-    const step = () => {
-      if (summonerId !== null) return resolve(true);
-      if (Date.now() >= deadline) return resolve(false);
-      setTimeout(step, 40);
-    };
-    setTimeout(step, 0);
-  });
-}
-
-function ensureSummonerId() {
-  if (summonerId !== null || summonerPending) return;
-  summonerPending = true;
-  let request;
+async function wrapSelectSkin() {
   try {
-    const get = api?.lcu?.get;
-    request = get
-      ? get(CURRENT_SUMMONER_URI, { ttl: SUMMONER_TTL })
-      : (rawFetch || window.fetch)(CURRENT_SUMMONER_URI).then((response) => response.json());
-  } catch {
-    summonerPending = false;
-    return;
-  }
-  Promise.resolve(request)
-    .then((summoner) => {
-      summonerId = typeof summoner?.summonerId === "number" ? summoner.summonerId : null;
-    })
-    .catch(() => {})
-    .finally(() => {
-      summonerPending = false;
-    });
-}
-function rewriteInventoryText(raw) {
-  if (!shouldFilter() || typeof raw !== "string") return raw;
-  if (inventoryTextCache.has(raw)) {
-    const cached = inventoryTextCache.get(raw);
-    inventoryTextCache.delete(raw);
-    inventoryTextCache.set(raw, cached);
-    return cached;
-  }
-  let rewritten = raw;
-  try {
-    const json = JSON.parse(raw);
-    if (unlockDeep(json)) rewritten = JSON.stringify(json);
-  } catch {}
-  inventoryTextCache.set(raw, rewritten);
-  while (inventoryTextCache.size > INVENTORY_TEXT_CACHE_LIMIT) {
-    inventoryTextCache.delete(inventoryTextCache.keys().next().value);
-  }
-  return rewritten;
-}
-
-function rewriteWebSocketFrame(text) {
-  if (!shouldFilter() || typeof text !== "string") return null;
-  const targetFrame = text.indexOf("lol-champions/v1/inventories") !== -1;
-  const augmentFrame = text.indexOf("SKIN_AUGMENT") !== -1;
-  if (!targetFrame && !augmentFrame) return null;
-  let frame;
-  try {
-    frame = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(frame) || frame.length < 3) return null;
-  const payload = frame[2];
-  if (!payload || typeof payload !== "object" || typeof payload.uri !== "string") return null;
-  let changed;
-  if (isTargetUrl(payload.uri)) {
-    changed = unlockDeep(payload.data);
-  } else if (isAugmentUrl(payload.uri)) {
-    changed = unlockAugmentInventory(payload.data);
-  } else {
-    return null;
-  }
-  if (!changed) return null;
-  return JSON.stringify(frame);
-}
-
-function wrapMessageListener(listener) {
-  if (typeof listener !== "function" || listener.__perfProfileWrap) return listener;
-  const wrapped = function (event) {
-    if (event && typeof event.data === "string") {
-      const rewritten = rewriteWebSocketFrame(event.data);
-      if (rewritten !== null) {
-        const fresh = new MessageEvent("message", {
-          data: rewritten,
-          origin: event.origin,
-          lastEventId: event.lastEventId,
-          ports: event.ports ? [...event.ports] : [],
-          source: event.source ?? null,
-        });
-        return listener.call(this, fresh);
-      }
-    }
-    return listener.call(this, event);
-  };
-  wrapped.__perfProfileWrap = true;
-  wrapped.__perfProfileOriginal = listener;
-  return wrapped;
-}
-
-function installWebSocketFilter() {
-  const proto = window.WebSocket && window.WebSocket.prototype;
-  if (!proto || proto.addEventListener.__perfProfileFilter) return;
-
-  const origAdd = proto.addEventListener;
-  const origRemove = proto.removeEventListener;
-  const origDispatch = proto.dispatchEvent;
-
-  proto.addEventListener = function (type, listener, options) {
-    return origAdd.call(this, type, type === "message" ? wrapMessageListener(listener) : listener, options);
-  };
-  proto.removeEventListener = function (type, listener, options) {
-    return origRemove.call(this, type, (listener && listener.__perfProfileOriginal) || listener, options);
-  };
-  proto.dispatchEvent = function (event) {
-    if (event && event.type === "message" && typeof event.data === "string") {
-      const rewritten = rewriteWebSocketFrame(event.data);
-      if (rewritten !== null) {
-        return origDispatch.call(
-          this,
-          new MessageEvent("message", {
-            data: rewritten,
-            origin: event.origin,
-            lastEventId: event.lastEventId,
-            ports: event.ports ? [...event.ports] : [],
-            source: event.source ?? null,
-          }),
-        );
-      }
-    }
-    return origDispatch.call(this, event);
-  };
-
-  const descriptor = Object.getOwnPropertyDescriptor(proto, "onmessage");
-  if (descriptor && descriptor.set && descriptor.get) {
-    Object.defineProperty(proto, "onmessage", {
-      configurable: true,
-      enumerable: descriptor.enumerable,
-      get: descriptor.get,
-      set(value) {
-        descriptor.set.call(this, typeof value === "function" ? wrapMessageListener(value) : value);
-      },
-    });
-  }
-
-  proto.addEventListener.__perfProfileFilter = true;
-}
-
-function installFetchFilter() {
-  const original = window.fetch;
-  if (typeof original !== "function" || original.__perfProfileFilter) return;
-  rawFetch = (...args) => original.call(window, ...args);
-
-  const wrapped = function (input, init) {
-    const url = typeof input === "string" ? input : (input && input.url) || "";
-    const inventory = pathIdOf(url) !== null;
-    const augmentRequest = isAugmentUrl(url);
-    let options = init;
-    if (shouldFilter() && options && typeof options.body === "string") {
-      const mapped = remapVariantIds(options.body);
-      if (mapped !== options.body) options = { ...options, body: mapped };
-    }
-    const promise = original.call(this, input, options);
-    if (!shouldFilter() || (!inventory && !augmentRequest)) return promise;
-    if (inventory) maybeRefreshSummoner();
-
-    return whenSummonerKnown(SUMMONER_WAIT_MS).then(() => {
-      const target = isTargetUrl(url);
-      if (!augmentRequest && !target) return promise;
-      if (target && augmentIds.size === 0) {
-        const latch = (async () => {
-          try {
-            const response = await promise;
-            if (response && response.ok && augmentIds.size === 0) {
-              const json = await response.clone().json().catch(() => null);
-              if (json) harvestFromPayload(json);
+    const picker = await api.whenRcpReady(PICKER_PLUGIN, 60000);
+    if (!active || !picker || typeof picker.selectSkin !== "function" || pickerApi) return;
+    const original = picker.selectSkin;
+    pickerApi = picker;
+    pickerSelectSkin = original;
+    picker.selectSkin = function (onSelected, onDefault, onReady) {
+      const select =
+        typeof onSelected === "function"
+          ? function (id, ...rest) {
+              return onSelected.call(this, active ? remapId(id) : id, ...rest);
             }
-          } catch {}
-          pendingTargetLoads.delete(latch);
-        })();
-        pendingTargetLoads.add(latch);
-      }
-      const ready = augmentRequest && augmentIds.size === 0 ? ensureAugmentIds() : Promise.resolve();
-      return ready
-        .then(() => promise)
-        .then((response) => {
-          if (!response || !response.ok) return response;
-          if (augmentRequest) {
-            return response
-              .clone()
-              .json()
-              .catch(() => null)
-              .then((json) => {
-                if (!json || !unlockAugmentInventory(json)) return response;
-                return new Response(JSON.stringify(json), {
-                  status: response.status,
-                  statusText: response.statusText,
-                  headers: response.headers,
-                });
-              });
-          }
-          return response
-            .clone()
-            .text()
-            .catch(() => null)
-            .then((text) => {
-              if (text === null) return response;
-              const rewritten = rewriteInventoryText(text);
-              if (rewritten === text) return response;
-              return new Response(rewritten, {
-                status: response.status,
-                statusText: response.statusText,
-                headers: response.headers,
-              });
-            });
-        });
-    });
-  };
-  wrapped.__perfProfileFilter = true;
-  window.fetch = wrapped;
-}
-function installXhrFilter() {
-  const proto = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
-  if (!proto || proto.open.__perfProfileFilter) return;
-
-  const origOpen = proto.open;
-  const origSend = proto.send;
-  const textDescriptor = Object.getOwnPropertyDescriptor(proto, "responseText");
-  const responseDescriptor = Object.getOwnPropertyDescriptor(proto, "response");
-
-  proto.open = function (method, url, ...rest) {
-    this.__perfProfileUrl = typeof url === "string" ? url : "";
-    return origOpen.call(this, method, url, ...rest);
-  };
-  proto.open.__perfProfileFilter = true;
-
-  proto.send = function (...args) {
-    const url = this.__perfProfileUrl || "";
-    const target = isTargetUrl(url);
-    const augment = !target && isAugmentUrl(url);
-    if (shouldFilter() && pathIdOf(url) !== null) maybeRefreshSummoner();
-    if (shouldFilter() && typeof args[0] === "string") {
-      const mapped = remapVariantIds(args[0]);
-      if (mapped !== args[0]) args = [mapped, ...args.slice(1)];
-    }
-    const xhr = this;
-    if (target && shouldFilter() && augmentIds.size === 0 && textDescriptor && textDescriptor.get) {
-      const latch = new Promise((resolve) => {
-        const finish = () => {
-          if (augmentIds.size === 0) {
-            try {
-              harvestFromPayload(JSON.parse(textDescriptor.get.call(xhr)));
-            } catch {}
-          }
-          pendingTargetLoads.delete(latch);
-          resolve();
-        };
-        xhr.addEventListener("load", finish, { once: true });
-        xhr.addEventListener("error", finish, { once: true });
-        xhr.addEventListener("abort", finish, { once: true });
-      });
-      pendingTargetLoads.add(latch);
-    }
-    if (textDescriptor && textDescriptor.get && (pathIdOf(url) !== null || augment)) {
-      const cache = { raw: null, gate: null, filtered: null };
-      const gateOpen = () => shouldFilter() && (augment || isTargetUrl(url));
-      const rewriteBody = (json) => (augment ? unlockAugmentInventory(json) : unlockDeep(json));
-      const filteredText = () => {
-        const gate = gateOpen();
-        if (cache.filtered !== null && cache.gate === gate) return cache.filtered;
-        const raw = textDescriptor.get.call(xhr);
-        cache.gate = gate;
-        cache.filtered = raw;
-        if (gate) {
-          if (augment) {
-            try {
-              const json = JSON.parse(raw);
-              if (rewriteBody(json)) cache.filtered = JSON.stringify(json);
-            } catch {}
-          } else {
-            cache.filtered = rewriteInventoryText(raw);
-          }
-        }
-        return cache.filtered;
-      };
-      Object.defineProperty(xhr, "responseText", { configurable: true, get: filteredText });
-      if (responseDescriptor && responseDescriptor.get) {
-        Object.defineProperty(xhr, "response", {
-          configurable: true,
-          get() {
-            const type = xhr.responseType;
-            if (type === "" || type === "text") return filteredText();
-            const value = responseDescriptor.get.call(xhr);
-            if (type === "json" && gateOpen() && value && typeof value === "object") rewriteBody(value);
-            return value;
-          },
-        });
-      }
-    }
-    if (augment && shouldFilter() && augmentIds.size === 0) {
-      const sendArgs = args;
-      ensureAugmentIds().finally(() => {
-        try {
-          origSend.apply(xhr, sendArgs);
-        } catch {}
-      });
-      return;
-    }
-    return origSend.apply(this, args);
-  };
-}
-
-function installSourceFilter() {
-  try {
-    filterActive = readDefaultEnabled();
-    installWebSocketFilter();
-    installFetchFilter();
-    installXhrFilter();
-    ensureSummonerId();
+          : onSelected;
+      return original.call(this, select, onDefault, onReady);
+    };
   } catch (error) {
-    logError("could not install the source filter.", error);
+    logError("could not hook the skin picker.", error);
   }
 }
 
-function ensureSourceFilter() {
-  try {
-    installWebSocketFilter();
-    installFetchFilter();
-    installXhrFilter();
-  } catch (error) {
-    logError("could not refresh the source filter.", error);
+function unwrapSelectSkin() {
+  if (pickerApi && pickerSelectSkin) {
+    if (Object.prototype.hasOwnProperty.call(pickerApi, "selectSkin")) delete pickerApi.selectSkin;
+    if (pickerApi.selectSkin !== pickerSelectSkin && typeof pickerSelectSkin === "function") pickerApi.selectSkin = pickerSelectSkin;
   }
+  pickerApi = null;
+  pickerSelectSkin = null;
+}
+
+async function loadTierLabel() {
+  if (tierLabel !== null) return tierLabel;
+  try {
+    const response = await fetch(TRANSLATIONS_URI);
+    const strings = response.ok ? await response.json() : null;
+    tierLabel = String(strings?.[TIER_KEY] ?? "").trim().toLowerCase();
+  } catch {
+    tierLabel = "";
+  }
+  return tierLabel;
+}
+
+async function groupByTier(dropdown) {
+  const label = await loadTierLabel();
+  if (!active || !dropdown.isConnected) return;
+  const options = [...dropdown.querySelectorAll("lol-uikit-dropdown-option")];
+  if (options.length === 0) return;
+  const tier = (label && options.find((option) => option.textContent.trim().toLowerCase() === label)) ?? options[options.length - 1];
+  if (tier && !tier.hasAttribute("selected")) tier.click();
 }
 
 function onEnable(utils) {
   api = utils;
-  filterActive = true;
-  ensureSourceFilter();
-  ensureSummonerId();
-  tierArmListener = (event) => {
-    const target = event.target instanceof Element ? event.target.closest(PICKER_BUTTON_SELECTOR) : null;
-    if (!target) return;
-    armPicker();
-  };
-  document.addEventListener("click", tierArmListener, true);
-  if (isPickerOpen()) startTierGrouping();
+  active = true;
+  const transform = (match, fn) => utils.transformBinding({ identifier: PICKER_PLUGIN, match: (path) => match.test(path), transform: fn });
+  handles = [
+    transform(CHAMPIONS_PATH, unlockChampions),
+    transform(MINIMAL_PATH, unlockMinimal),
+    transform(AUGMENTS_PATH, unlockAugmentInventory),
+  ];
+  unwatchGrouping = utils.watch(GROUPING_SELECTOR, (dropdown) => {
+    groupByTier(dropdown).catch((error) => logError("tier grouping failed.", error));
+  });
+  wrapSelectSkin();
 }
 
 function onDisable() {
-  filterActive = false;
-  inventoryTextCache.clear();
-  if (tierArmListener) document.removeEventListener("click", tierArmListener, true);
-  tierArmListener = null;
-  if (pickerArmTimer !== null) clearTimeout(pickerArmTimer);
-  pickerArmTimer = null;
-  pickerArmUntil = 0;
-  stopTierGrouping();
+  active = false;
+  for (const handle of handles) handle.dispose();
+  handles = [];
+  unwatchGrouping?.();
+  unwatchGrouping = null;
+  unwrapSelectSkin();
   api = null;
 }
 
 export function init() {
-  installSourceFilter();
-
   const registerWith = (utils) => {
     utils.registerPlugin({
       id: PLUGIN_ID,
@@ -762,6 +283,6 @@ export function init() {
   if (window.PerfectionistUtils) {
     registerWith(window.PerfectionistUtils);
   } else {
-    addEventListener("perfectionist:utils-ready", (event) => registerWith(event.detail), { once: true });
+    addEventListener("perfectionist:utils-ready", (event) => registerWith(event.detail ?? window.PerfectionistUtils), { once: true });
   }
 }

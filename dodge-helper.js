@@ -1,143 +1,79 @@
 const PLUGIN_ID = "dodge-helper";
-export const version = "1.4.14";
+export const version = "2.0.0";
 
 const PHASE_URI = "/lol-gameflow/v1/gameflow-phase";
-const SESSION_URI = "/lol-gameflow/v1/session";
+const GAMEFLOW_URI = "/lol-gameflow/v1/session";
 const CHAMP_SELECT_URI = "/lol-champ-select/v1/session";
-const TIMER_URI = "/lol-champ-select/v1/session/timer";
+const SEARCH_STATE_URI = "/lol-lobby/v2/lobby/matchmaking/search-state";
 const SUMMONER_URI = "/lol-summoner/v1/current-summoner";
 const RANKED_STATS_URI = "/lol-ranked/v1/current-ranked-stats";
-const QUIT_V2_URI = '/lol-login/v1/session/invoke?destination=lcdsServiceProxy&method=call&args=["","teambuilder-draft","quitV2",""]';
-const CUSTOM_CANCEL_URI = "/lol-lobby/v1/lobby/custom/cancel-champ-select";
-const STORE_KEY = "perfectionist:dodge-helper:accounts:v1";
-const PENDING_KEY = "perfectionist:dodge-helper:pending:v1";
-const DAY_MS = 24 * 60 * 60 * 1000;
-const PENDING_MAX_AGE_MS = 2 * 60 * 60 * 1000;
-const STYLE_ID = "perf-dodge-helper-style";
-const LAYER_ID = "perfDodgeHelperLayer";
-const ROOT_ID = "perfDodgeHelper";
-const BUTTON_ID = "perfDodgeHelperButton";
-const COST_ID = "perfDodgeHelperCost";
-const FOOTER_SELECTOR = ".bottom-right-buttons";
-const SCREEN_SELECTOR = ".champion-select";
+// The same endpoint the client's own QUIT button uses. It leaves champ select on the server and moves the
+// client back to the lobby properly.
+const QUIT_URI = "/lol-lobby-team-builder/champ-select/v1/session/quit";
+// Riot refuses that endpoint in ranked and in the last seconds before a game starts. Closing the client is then
+// the only way out (it counts as a dodge), so it is offered as an explicitly labelled confirm step.
+const CLOSE_CLIENT_URI = "/process-control/v1/process/quit";
 
-const RANKED_QUEUES = new Map([
-  [420, "RANKED_SOLO_5x5"],
-  [440, "RANKED_FLEX_SR"],
-]);
-const ARAM_QUEUES = new Set([450, 2400, 2401, 2402]);
+const STORE_KEY = "perfectionist:dodge-helper:accounts:v2";
+const LEGACY_STORE_KEY = "perfectionist:dodge-helper:accounts:v1";
+const STYLE_ID = "perf-dodge-helper-style";
+const ROOT_CLASS = "perf-dodge-quit";
+const FOOTER_SELECTOR = ".bottom-right-buttons";
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+const CONFIRM_MS = 3000;
+
+// Riot's published queue dodge penalties (support article "Queue Dodging"). The tier goes up by one per
+// dodge and drops by one for every 24 hours without a dodge. Dodges count across all queues.
+const LOCKOUT_MINUTES = { 1: 6, 2: 30, 3: 720 };
+const ARAM_LOCKOUT_MINUTES = { 1: 15, 2: 30, 3: 720 };
+const RANKED_LP = { 1: 5, 2: 15, 3: 15 };
+const APEX_FIRST_DODGE_LP = 20;
 const APEX_TIERS = new Set(["MASTER", "GRANDMASTER", "CHALLENGER"]);
-const PENALTY_TIERS = {
-  1: { lp: 5, lockout: 6 },
-  2: { lp: 15, lockout: 30 },
-  3: { lp: 15, lockout: 720 },
-};
-const GAME_PHASES = new Set([
-  "GameStart",
-  "InProgress",
-  "Reconnect",
-  "WaitingForStats",
-  "PreEndOfGame",
-  "EndOfGame",
-]);
 
 const CSS = `
-#${LAYER_ID} {
-  position: fixed !important; inset: 0 !important; z-index: 100 !important;
-  pointer-events: none !important;
+.${ROOT_CLASS} { position: fixed; z-index: 100; height: 32px; box-sizing: border-box; }
+.${ROOT_CLASS} lol-uikit-flat-button { display: block; width: 100%; height: 32px; }
+.${ROOT_CLASS} .perf-dodge-cost {
+  position: absolute; left: 50%; bottom: calc(100% + 5px); transform: translateX(-50%);
+  white-space: nowrap; pointer-events: none; text-align: center;
+  font-family: var(--font-body, "LoL Body", Arial, sans-serif); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.25px; line-height: 14px; color: #c89b3c; text-shadow: 0 1px 2px #000;
 }
-#${ROOT_ID} {
-  position: fixed !important; display: flex !important; align-items: flex-end !important;
-  justify-content: center !important; width: 114px !important; height: 32px !important;
-  pointer-events: auto !important; z-index: 1 !important;
-}
-#${ROOT_ID} .perf-dodge-button {
-  width: 100% !important; height: 32px !important; box-sizing: border-box !important;
-  appearance: none !important; -webkit-appearance: none !important; border-radius: 0 !important;
-  padding: 0 !important; border: 1px solid #785a28 !important;
-  background: linear-gradient(to bottom, #1e2328 0%, #11161c 55%, #0a0e12 100%) !important;
-  color: #cdbe91 !important; font-family: var(--font-display, "Beaufort for LOL", serif) !important;
-  font-size: 13px !important; font-weight: 700 !important; letter-spacing: 1px !important;
-  text-transform: uppercase !important; cursor: pointer !important;
-  text-shadow: 0 1px 2px #000 !important;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(240, 230, 210, 0.12) !important;
-}
-#${ROOT_ID} .perf-dodge-button:hover {
-  color: #f0e6d2 !important; border-color: #c89b3c !important;
-  background: linear-gradient(to bottom, #2a3038 0%, #192027 55%, #0e141a 100%) !important;
-}
-#${ROOT_ID} .perf-dodge-button:disabled { opacity: 0.6 !important; cursor: default !important; }
-#${ROOT_ID} .perf-dodge-cost {
-  position: absolute !important; left: 50% !important; bottom: calc(100% + 4px) !important;
-  transform: translateX(-50%) !important; box-sizing: border-box !important;
-  max-width: 245px !important; padding: 3px 7px !important;
-  background: rgba(1, 10, 19, 0.88) !important; border: 1px solid #785a28 !important;
-  color: #cdbe91 !important; font-family: var(--font-body, "LoL Body", Arial, sans-serif) !important;
-  font-size: 10px !important; font-weight: 700 !important; letter-spacing: 0.3px !important;
-  line-height: 1.25 !important; text-align: center !important; white-space: nowrap !important;
-  pointer-events: none !important;
-}
+.${ROOT_CLASS}.perf-dodge-armed lol-uikit-flat-button { filter: hue-rotate(-28deg) saturate(1.6); }
 `;
 
 let api = null;
 let active = false;
-let dodging = false;
 let unsubscribes = [];
-let unwatchers = [];
+let unwatchFooter = null;
+let removeFrameHook = null;
 let removeStyle = null;
-let resizeObserver = null;
-let mountFrame = 0;
-let positionFrame = 0;
-let networkWatch = null;
+let armedTimer = null;
 let penaltyToken = 0;
-let pendingWriteAt = 0;
-let accountPromise = null;
+
 const state = {
   phase: null,
-  queueId: 0,
-  isCustom: false,
+  queue: null,
   showQuitButton: false,
-  gameMode: "",
-  account: null,
+  summoner: null,
   penalty: null,
-  lastSelfDodgeAt: 0,
-  selfDodgeRecorded: false,
-  lockedLocalPick: false,
-  localActionSeen: false,
-  localActionActive: false,
-  localActionDeadline: 0,
-  pageHiding: false,
+  armed: false,
+  busy: false,
+  quitSent: false,
+  closeOffered: false,
 };
 
-function unwrap(raw) {
-  if (typeof raw === "string") {
-    const text = raw.trim();
-    if (text.startsWith("{") || text.startsWith("[")) {
-      try {
-        return unwrap(JSON.parse(text));
-      } catch {
-        return raw;
-      }
-    }
-    return raw;
-  }
-  if (Array.isArray(raw) && raw.length >= 3 && typeof raw[1] === "string") {
-    return unwrap(raw[2]?.data ?? raw[2]);
-  }
-  if (raw && typeof raw === "object" && "data" in raw) {
-    const keys = Object.keys(raw);
-    if (keys.includes("uri") || keys.includes("eventType") || keys.length <= 2) return unwrap(raw.data);
-  }
-  return raw;
-}
+/* ---------------------------------------------------------------------------------------------
+ * Dodge tier bookkeeping (per account, local).
+ * ------------------------------------------------------------------------------------------- */
 
 function readStore() {
   try {
-    const parsed = JSON.parse(localStorage.getItem(STORE_KEY) || "{}");
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
+    const parsed = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+  } catch {}
+  return {};
 }
 
 function writeStore(store) {
@@ -146,659 +82,406 @@ function writeStore(store) {
   } catch {}
 }
 
-function readPending() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(PENDING_KEY) || "null");
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function writePending(pending) {
-  try {
-    localStorage.setItem(PENDING_KEY, JSON.stringify(pending));
-  } catch {}
-}
-
-function clearPending() {
-  pendingWriteAt = 0;
-  try {
-    localStorage.removeItem(PENDING_KEY);
-  } catch {}
-}
-
 function accountKey() {
-  const account = state.account;
-  if (!account) return null;
-  if (account.puuid) return account.puuid;
-  if (account.summonerId) return `sid:${account.summonerId}`;
-  return null;
+  return state.summoner?.puuid || (state.summoner?.summonerId ? `sid:${state.summoner.summonerId}` : null);
 }
 
-function currentTier() {
+function storedRecord() {
   const key = accountKey();
-  if (!key) return 0;
+  if (!key) return null;
   const record = readStore()[key];
-  if (!record || typeof record.tier !== "number" || typeof record.at !== "number") return 0;
-  const drops = Math.max(0, Math.floor((Date.now() - record.at) / DAY_MS));
-  return Math.max(0, Math.min(record.tier - drops, 3));
+  return record && typeof record.tier === "number" && typeof record.at === "number" ? record : null;
 }
 
-async function loadAccount() {
-  if (state.account) return state.account;
-  if (!accountPromise) {
-    accountPromise = api.lcu
-      .get(SUMMONER_URI)
-      .then((summoner) => {
-        if (!active) return null;
-        if (summoner) {
-          state.account = { puuid: summoner.puuid || "", summonerId: summoner.summonerId || 0 };
-        }
-        return state.account;
-      })
-      .catch(() => null)
-      .finally(() => {
-        accountPromise = null;
-      });
-  }
-  return accountPromise;
+// Current tier after decay: one step down per full 24 hours since the last dodge.
+function currentTier(now = Date.now()) {
+  const record = storedRecord();
+  if (!record) return 0;
+  const drops = Math.floor(Math.max(0, now - record.at) / DAY_MS);
+  return Math.max(0, Math.min(3, record.tier - drops));
 }
 
-function isCustomQueue(queueId = state.queueId) {
-  return state.isCustom || state.gameMode === "PRACTICETOOL" || Number(queueId) === 0;
-}
-
-function isAramQueue(queueId = state.queueId) {
-  const id = Number(queueId);
-  if (RANKED_QUEUES.has(id)) return false;
-  return ARAM_QUEUES.has(id) || /ARAM/i.test(state.gameMode);
-}
-
-function isGamePhase(phase) {
-  return GAME_PHASES.has(phase);
-}
-
-async function recordDodge(options = {}) {
-  if (!active) return false;
-  const queueId = Number(options.queueId ?? state.queueId) || 0;
-  if (!options.force && isCustomQueue(queueId)) return false;
-  const now = Date.now();
-  if (now - state.lastSelfDodgeAt < 1500) return false;
-  state.lastSelfDodgeAt = now;
-  await loadAccount();
+function saveTier(tier, at) {
   const key = accountKey();
-  if (!key) return false;
+  if (!key) return;
   const store = readStore();
-  const tier = Math.min(currentTier() + 1, 3);
-  store[key] = { tier, at: now };
+  const previous = store[key];
+  // The same dodge can be observed several times (search state, gameflow); keep the first timestamp.
+  if (previous && previous.tier === tier && Math.abs(previous.at - at) < 10 * 60 * 1000) return;
+  store[key] = { tier: Math.max(1, Math.min(3, tier)), at };
   writeStore(store);
-  clearPending();
-  state.selfDodgeRecorded = true;
-  return true;
+}
+
+function recordOwnDodge() {
+  saveTier(Math.min(3, currentTier() + 1), Date.now());
+}
+
+// The server tells us the lockout it applied. Its length identifies the tier exactly
+// (6 or 15 minutes: tier 1, 30 minutes: tier 2, 12 hours: tier 3), which also corrects the count for
+// dodges this plugin did not see (closing the client, a missed lock-in, another PC).
+// Only readings that can't be ambiguous are used: more than 30 minutes left can only be the 12 hour
+// lockout, and otherwise the reading must be within 3 minutes of a full lockout (a 30 minute lockout with
+// 10 minutes left would look like a fresh 15 minute one).
+const LOCKOUTS = [
+  [6, 1],
+  [15, 1],
+  [30, 2],
+];
+const FRESH_WINDOW_S = 180;
+
+function learnFromPenalty(remainingSeconds) {
+  const remaining = Number(remainingSeconds);
+  if (!Number.isFinite(remaining) || remaining <= 0) return;
+  if (remaining > 30 * 60) {
+    saveTier(3, Date.now() - Math.max(0, 720 * 60 - remaining) * 1000);
+    return;
+  }
+  for (const [minutes, tier] of LOCKOUTS) {
+    const full = minutes * 60;
+    if (remaining <= full && remaining >= full - FRESH_WINDOW_S) {
+      saveTier(tier, Date.now() - (full - remaining) * 1000);
+      return;
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * Penalty preview
+ * ------------------------------------------------------------------------------------------- */
+
+function queueOf(gameflow) {
+  const queue = gameflow?.gameData?.queue;
+  if (!queue) return null;
+  return {
+    id: Number(queue.id) || 0,
+    type: String(queue.type ?? ""),
+    gameMode: String(queue.gameMode ?? ""),
+    isRanked: queue.isRanked === true,
+    isCustom: Boolean(gameflow?.gameData?.isCustomGame || queue.isCustom),
+  };
+}
+
+function isAram(queue) {
+  return /ARAM/i.test(queue?.type ?? "") || /^ARAM$/i.test(queue?.gameMode ?? "");
+}
+
+function isRankedQueue(queue) {
+  return Boolean(queue?.isRanked) || /^RANKED_/i.test(queue?.type ?? "");
 }
 
 function lockoutText(minutes) {
-  if (minutes >= 720) return "12 hr queue";
-  if (minutes >= 30) return "30 min queue";
-  return `${minutes} min queue`;
+  if (minutes >= 60) return `${Math.round(minutes / 60)} hr lockout`;
+  return `${minutes} min lockout`;
 }
 
-function computePenalty(queueId = state.queueId) {
+async function computePenalty(queue) {
   const tier = Math.min(currentTier() + 1, 3);
-  const aram = isAramQueue(queueId);
-  const lockout = aram && tier === 1 ? 15 : PENALTY_TIERS[tier].lockout;
-  const rankedKey = RANKED_QUEUES.get(Number(queueId));
-  if (!rankedKey) {
-    return Promise.resolve({ ranked: false, tier, lp: 0, lockout, apex: false, aram });
-  }
-  return api.lcu
-    .get(RANKED_STATS_URI)
-    .catch(() => null)
-    .then((stats) => {
-      const tierName = String(stats?.queueMap?.[rankedKey]?.tier ?? "").toUpperCase();
-      const rated = Boolean(tierName) && tierName !== "UNRANKED";
-      const apex = rated && APEX_TIERS.has(tierName);
-      return {
-        ranked: true,
-        rated,
-        tier,
-        lp: rated ? (apex && tier === 1 ? 20 : PENALTY_TIERS[tier].lp) : 0,
-        lockout,
-        apex,
-        aram,
-      };
-    });
+  const aram = isAram(queue);
+  const lockout = (aram ? ARAM_LOCKOUT_MINUTES : LOCKOUT_MINUTES)[tier];
+  const penalty = { tier, lockout, lp: 0, ranked: isRankedQueue(queue), placed: false, apex: false, aram };
+  if (!penalty.ranked) return penalty;
+  const stats = await api.lcu.get(RANKED_STATS_URI).catch(() => null);
+  const entry = stats?.queueMap?.[queue.type] ?? null;
+  const tierName = String(entry?.tier ?? "").toUpperCase();
+  // No LP is lost before you are placed in that queue.
+  penalty.placed = Boolean(tierName) && tierName !== "NONE" && tierName !== "UNRANKED" && entry?.isProvisional !== true;
+  penalty.apex = penalty.placed && APEX_TIERS.has(tierName);
+  if (penalty.placed) penalty.lp = penalty.apex && tier === 1 ? APEX_FIRST_DODGE_LP : RANKED_LP[tier];
+  return penalty;
 }
 
-function penaltyLabel(penalty) {
+function costText(penalty) {
   if (!penalty) return "";
   const parts = [];
-  if (penalty.ranked) parts.push(penalty.lp > 0 ? `\u2212${penalty.lp} LP` : "No LP");
-  else parts.push("No LP");
+  if (penalty.ranked) parts.push(penalty.lp > 0 ? `−${penalty.lp} LP` : "No LP");
   parts.push(lockoutText(penalty.lockout));
-  if (penalty.apex) parts.push("MMR impact");
-  return parts.join(" \u00b7 ");
+  return parts.join(" · ");
 }
 
-function penaltyTitle(penalty) {
-  const lines = [
-    "Queue dodge penalty",
-    "1st dodge: -5 LP and a 6-minute queue lockout.",
-    "2nd dodge: -15 LP and a 30-minute queue lockout.",
-    "3rd+ dodge: -15 LP and a 12-hour queue lockout.",
-    "Apex (Master+): the first dodge costs 20 LP instead of 5, and Apex dodges affect MMR.",
-    "Your dodge tier drops one step 24 hours after your last dodge.",
-  ];
+function costTitle(penalty) {
+  const lines = [];
   if (penalty) {
-    lines.unshift(`Next dodge (tier ${penalty.tier}): ${penaltyLabel(penalty)}.`);
-    if (!penalty.ranked) lines.push("No LP is lost outside ranked queues; the queue lockout still applies.");
-    if (penalty.aram) lines.push("ARAM: the first dodge has a 15-minute queue lockout.");
-    if (penalty.ranked && !penalty.rated) lines.push("This ranked queue is still unranked, so no LP is lost.");
+    lines.push(`Your next dodge is dodge #${penalty.tier}: ${costText(penalty)}.`);
+    if (penalty.ranked && !penalty.placed) lines.push("You are not placed in this queue yet, so no LP is lost.");
+    if (penalty.apex) lines.push("Master+ dodges also affect your MMR.");
+    if (penalty.aram) lines.push("ARAM dodges also cost a Blessed Card.");
   }
+  lines.push("", "Dodges within 24 hours stack: 6 min, then 30 min, then 12 hours (ranked: -5, -15, -15 LP).");
+  lines.push("Each 24 hours without a dodge lowers the count by one.");
   return lines.join("\n");
 }
 
-function render() {
-  const button = document.getElementById(BUTTON_ID);
-  const cost = document.getElementById(COST_ID);
-  if (!button || !cost) return;
-  const ranked = RANKED_QUEUES.has(Number(state.queueId));
-  const label = ranked ? "DODGE" : "QUIT";
-  if (button.textContent !== label) button.textContent = label;
-  button.disabled = dodging;
-  const penalty = state.penalty;
-  const text = penaltyLabel(penalty);
-  if (cost.textContent !== text) cost.textContent = text;
-  cost.style.display = text ? "" : "none";
-  const title = penalty ? penaltyTitle(penalty) : "Loading the current dodge penalty...";
-  button.title = title;
-  cost.title = title;
-  button.setAttribute("aria-label", `${label}. ${title}`);
-}
-
 async function refreshPenalty() {
-  if (!active || state.phase !== "ChampSelect" || !state.queueId || isCustomQueue() || state.showQuitButton) return;
-  const queueId = state.queueId;
+  if (!active || state.phase !== "ChampSelect" || !state.queue || state.queue.isCustom) return;
   const token = ++penaltyToken;
-  const penalty = await computePenalty(queueId);
-  if (!active || token !== penaltyToken || queueId !== state.queueId) return;
+  const penalty = await computePenalty(state.queue);
+  if (!active || token !== penaltyToken) return;
   state.penalty = penalty;
   render();
 }
 
-function applySession(raw) {
-  const session = unwrap(raw);
-  if (!session) return;
-  const queue = session.gameData?.queue;
-  if (queue) {
-    const queueId = Number(queue.id ?? 0) || 0;
-    const isCustom = Boolean(session.gameData?.isCustomGame || queue.isCustom);
-    const gameMode = String(queue.gameMode ?? "");
-    if (queueId !== state.queueId || isCustom !== state.isCustom || gameMode !== state.gameMode) {
-      state.queueId = queueId;
-      state.isCustom = isCustom;
-      state.gameMode = gameMode;
-      state.penalty = null;
-      if (state.phase === "ChampSelect") refreshPenalty();
-    }
-  }
-  ensureMount();
-  syncWatching();
-  savePending();
+/* ---------------------------------------------------------------------------------------------
+ * Button: the client's own flat button, on its own row above the chat / missions / voice buttons.
+ * ------------------------------------------------------------------------------------------- */
+
+function shouldShow() {
+  return active && state.phase === "ChampSelect" && state.queue && !state.queue.isCustom && !state.showQuitButton;
 }
 
-function syncLocalPick(session) {
-  const cellId = Number(session?.localPlayerCellId);
-  if (!Number.isFinite(cellId)) return;
-  const actions = Array.isArray(session.actions) ? session.actions.flat() : [];
-  const picks = actions.filter((action) => Number(action?.actorCellId) === cellId && action?.type === "pick");
-  if (!picks.length) return;
-  const locked = picks.some((action) => action?.completed === true);
-  if (locked) {
-    state.lockedLocalPick = true;
-    state.localActionSeen = false;
-    state.localActionActive = false;
-    state.localActionDeadline = 0;
+function buttonLabel() {
+  if (state.busy) return "Leaving...";
+  if (state.closeOffered) return state.armed ? "Confirm close" : "Close client";
+  if (state.armed) return "Confirm";
+  return isRankedQueue(state.queue) ? "Dodge" : "Quit";
+}
+
+// Sits on its own row right above the chat / missions / voice buttons, exactly as wide as that group.
+function place(root, footer) {
+  const chat = footer.querySelector("lol-social-chat-toggle-button");
+  const voice = footer.querySelector(".champ-select-voice-button-wrapper");
+  const box = footer.getBoundingClientRect();
+  const left = Math.round((chat ?? footer).getBoundingClientRect().left);
+  const right = Math.round((voice ?? footer).getBoundingClientRect().right);
+  const top = Math.round(box.top - 32 - 8);
+  const width = Math.max(96, right - left);
+  const key = `${left}:${top}:${width}`;
+  if (root.dataset.place === key) return;
+  root.dataset.place = key;
+  root.style.left = `${left}px`;
+  root.style.top = `${top}px`;
+  root.style.width = `${width}px`;
+}
+
+function render() {
+  const footer = document.querySelector(FOOTER_SELECTOR);
+  let root = document.querySelector(`.${ROOT_CLASS}`);
+  if (!shouldShow() || !footer) {
+    root?.remove();
     return;
   }
-  state.lockedLocalPick = false;
-  const active = picks.find((action) => action?.isInProgress === true);
-  state.localActionActive = Boolean(active);
-  if (active) {
-    state.localActionSeen = true;
-    const timeLeft = Number(session?.timer?.timeLeft);
-    if (Number.isFinite(timeLeft)) {
-      state.localActionDeadline = Date.now() + Math.max(0, timeLeft) * 1000;
-    }
+  if (!root || !root.isConnected) {
+    root?.remove();
+    root = document.createElement("div");
+    root.className = ROOT_CLASS;
+    const cost = document.createElement("div");
+    cost.className = "perf-dodge-cost";
+    const button = document.createElement("lol-uikit-flat-button");
+    button.addEventListener("click", onClick);
+    root.append(cost, button);
+    document.body.append(root);
   }
+  place(root, footer);
+  const button = root.querySelector("lol-uikit-flat-button");
+  const cost = root.querySelector(".perf-dodge-cost");
+  const label = buttonLabel();
+  if (button.textContent !== label) button.textContent = label;
+  if (state.busy) button.setAttribute("disabled", "true");
+  else button.removeAttribute("disabled");
+  root.classList.toggle("perf-dodge-armed", state.armed);
+  const text = costText(state.penalty);
+  if (cost.textContent !== text) cost.textContent = text;
+  const title = state.closeOffered
+    ? "Riot doesn't let the client leave this champ select (ranked, or the game is about to start). Closing the client dodges; reopen League afterwards."
+    : state.armed
+      ? "Click again to leave champ select."
+      : costTitle(state.penalty);
+  if (root.title !== title) root.title = title;
 }
 
-function syncTimer(raw) {
-  const timer = unwrap(raw);
-  if (!timer || typeof timer !== "object") return;
-  if (!state.localActionActive || state.lockedLocalPick) return;
-  const timeLeft = Number(timer.timeLeft);
-  if (!Number.isFinite(timeLeft) || timeLeft < 0) return;
-  state.localActionSeen = true;
-  state.localActionDeadline = Date.now() + timeLeft * 1000;
+function disarm() {
+  clearTimeout(armedTimer);
+  armedTimer = null;
+  state.armed = false;
 }
 
-function applyChampSelect(raw) {
-  const session = unwrap(raw);
-  if (!session) return;
-  state.showQuitButton = Boolean(session.showQuitButton);
-  const queueId = Number(session.queueId ?? 0) || 0;
-  if (queueId > 0 && queueId !== state.queueId) {
-    state.queueId = queueId;
-    state.penalty = null;
-  }
-  if (typeof session.isCustomGame === "boolean") state.isCustom = session.isCustomGame;
-  syncLocalPick(session);
-  if (state.localActionActive && !state.localActionDeadline) {
-    api.lcu
-      .get(TIMER_URI)
-      .catch(() => null)
-      .then((timer) => {
-        if (active && timer) syncTimer(timer);
-      });
-  }
-  ensureMount();
-  syncWatching();
-  savePending();
-}
-
-function build() {
-  const root = document.createElement("div");
-  root.id = ROOT_ID;
-  const cost = document.createElement("div");
-  cost.id = COST_ID;
-  cost.className = "perf-dodge-cost";
-  const button = document.createElement("button");
-  button.type = "button";
-  button.id = BUTTON_ID;
-  button.className = "perf-dodge-button";
-  button.textContent = "DODGE";
-  bindButton(button);
-  root.append(cost, button);
-  return root;
-}
-
-function bindButton(button) {
-  if (!button || button.__perfClickBound) return;
-  button.__perfClickBound = true;
-  button.addEventListener("click", onButtonClick);
-}
-
-function onButtonClick(event) {
+function onClick(event) {
   event.preventDefault();
   event.stopPropagation();
-  quitOrDodge();
-}
-
-function ensureLayer() {
-  let layer = document.getElementById(LAYER_ID);
-  if (!layer) {
-    layer = document.createElement("div");
-    layer.id = LAYER_ID;
-    document.body.append(layer);
-  }
-  return layer;
-}
-
-function ensureMount() {
-  if (state.phase !== "ChampSelect" || isCustomQueue() || state.showQuitButton) {
-    unmount();
+  if (state.busy || !shouldShow()) return;
+  // Two clicks: a stray click can't cost LP.
+  if (!state.armed) {
+    state.armed = true;
+    clearTimeout(armedTimer);
+    armedTimer = setTimeout(() => {
+      disarm();
+      render();
+    }, CONFIRM_MS);
+    render();
     return;
   }
-  const layer = ensureLayer();
-  let root = document.getElementById(ROOT_ID);
-  const created = !root;
-  if (!root) root = build();
-  if (root.parentElement !== layer) layer.append(root);
-  bindButton(document.getElementById(BUTTON_ID));
+  disarm();
+  if (state.closeOffered) closeClient();
+  else leave();
+}
+
+function closeClient() {
+  state.busy = true;
   render();
-  schedulePosition();
-  if (created) observeLayout();
+  recordOwnDodge();
+  fetch(CLOSE_CLIENT_URI, { method: "POST" }).catch(() => {});
 }
 
-function unmount() {
-  document.getElementById(ROOT_ID)?.remove();
-  document.getElementById(LAYER_ID)?.remove();
-}
-
-function visibleFooter() {
-  const footer = document.querySelector(FOOTER_SELECTOR);
-  if (!footer) return null;
-  const rect = footer.getBoundingClientRect();
-  if (rect.width < 20 || rect.height < 10) return null;
-  if (rect.top < window.innerHeight * 0.5) return null;
-  return rect;
-}
-
-function positionRoot() {
-  positionFrame = 0;
-  const root = document.getElementById(ROOT_ID);
-  if (!root) return;
-  const footer = visibleFooter();
-  const height = root.offsetHeight || 32;
-  if (footer) {
-    const footerElement = document.querySelector(FOOTER_SELECTOR);
-    const chat = footerElement?.querySelector("lol-social-chat-toggle-button");
-    const voice = footerElement?.querySelector(".champ-select-voice-button-wrapper");
-    const chatRect = chat?.getBoundingClientRect();
-    const voiceRect = voice?.getBoundingClientRect();
-    const left = chatRect?.left;
-    const rightEdge = voiceRect?.right ?? footer.right;
-    const width = left && rightEdge > left ? Math.round(rightEdge - left) : 114;
-    const right = Math.round(Math.max(8, window.innerWidth - rightEdge));
-    const top = Math.round(Math.max(8, footer.top - height - 8));
-    root.style.width = `${width}px`;
-    root.style.left = "auto";
-    root.style.right = `${right}px`;
-    root.style.top = `${top}px`;
-    root.style.bottom = "auto";
-    return;
-  }
-  root.style.width = "114px";
-  root.style.left = "auto";
-  root.style.top = "auto";
-  root.style.right = "20px";
-  root.style.bottom = "76px";
-}
-
-function schedulePosition() {
-  if (positionFrame) return;
-  positionFrame = requestAnimationFrame(positionRoot);
-}
-
-function scheduleMount() {
-  if (mountFrame) return;
-  mountFrame = requestAnimationFrame(() => {
-    mountFrame = 0;
-    ensureMount();
-  });
-}
-
-function observeLayout() {
-  if (typeof ResizeObserver !== "function" || !resizeObserver) return;
-  resizeObserver.disconnect();
-  const footer = document.querySelector(FOOTER_SELECTOR);
-  if (footer) resizeObserver.observe(footer);
-  const screen = document.querySelector(SCREEN_SELECTOR);
-  if (screen) resizeObserver.observe(screen);
-}
-
-function onWindowResize() {
-  schedulePosition();
-  observeLayout();
-}
-
-function onPageHide() {
-  if (!active || state.phase !== "ChampSelect" || isCustomQueue()) return;
-  state.pageHiding = true;
-  savePending(true);
-}
-
-function syncWatching() {
-  if (state.phase === "ChampSelect" && !isCustomQueue()) startDodgeWatcher();
-  else removeDodgeWatcher();
-}
-
-function isDodgeUrl(url) {
-  return /(?:lol-gameflow\/v1\/session\/dodge|lol-(?:champ-select|lobby-team-builder)\/.*\/session\/quit)(?:\?|$)/i.test(
-    String(url),
-  );
-}
-
-function startDodgeWatcher() {
-  if (networkWatch) return;
-  const originalFetch = window.fetch;
-  const originalOpen = XMLHttpRequest.prototype.open;
-  const originalSend = XMLHttpRequest.prototype.send;
-
-  const ourFetch = function (...args) {
-    const url = String(args[0]?.url ?? args[0] ?? "");
-    const method = String(args[1]?.method ?? args[0]?.method ?? "GET").toUpperCase();
-    const promise = originalFetch.apply(this, args);
-    if (method === "POST" && isDodgeUrl(url)) {
-      promise
-        .then((response) => {
-          if (response.ok) recordDodge();
-        })
-        .catch(() => {});
-    }
-    return promise;
-  };
-
-  const ourOpen = function (method, url, ...rest) {
-    this.__perfDodgeUrl = String(url);
-    this.__perfDodgeMethod = String(method ?? "GET").toUpperCase();
-    return originalOpen.call(this, method, url, ...rest);
-  };
-
-  const ourSend = function (body) {
-    if (this.__perfDodgeMethod === "POST" && isDodgeUrl(this.__perfDodgeUrl)) {
-      this.addEventListener("load", () => {
-        if (this.status >= 200 && this.status < 300) recordDodge();
-      });
-    }
-    return originalSend.call(this, body);
-  };
-
-  window.fetch = ourFetch;
-  XMLHttpRequest.prototype.open = ourOpen;
-  XMLHttpRequest.prototype.send = ourSend;
-
-  networkWatch = {
-    restore() {
-      if (window.fetch === ourFetch) window.fetch = originalFetch;
-      if (XMLHttpRequest.prototype.open === ourOpen) XMLHttpRequest.prototype.open = originalOpen;
-      if (XMLHttpRequest.prototype.send === ourSend) XMLHttpRequest.prototype.send = originalSend;
-    },
-  };
-}
-
-function removeDodgeWatcher() {
-  networkWatch?.restore();
-  networkWatch = null;
-}
-
-function savePending(closed = false) {
-  if (!active || state.phase !== "ChampSelect" || isCustomQueue()) return;
-  const now = Date.now();
-  if (!closed && now - pendingWriteAt < 1000) return;
-  pendingWriteAt = now;
-  writePending({
-    key: accountKey(),
-    seenAt: now,
-    queueId: state.queueId,
-    locked: state.lockedLocalPick === true,
-    closed: Boolean(closed),
-  });
-}
-
-async function reconcilePending(phase) {
-  const pending = readPending();
-  if (!pending) return;
-  if (phase === "ChampSelect" || isGamePhase(phase)) {
-    clearPending();
-    return;
-  }
-  const age = Date.now() - Number(pending.seenAt || 0);
-  if (!Number.isFinite(age) || age < 0 || age > PENDING_MAX_AGE_MS) {
-    clearPending();
-    return;
-  }
-  const key = accountKey();
-  if (pending.key && key && pending.key !== key) {
-    clearPending();
-    return;
-  }
-  if (pending.closed === true && pending.locked !== true) {
-    await recordDodge({ force: true, queueId: Number(pending.queueId) || 0 });
-  }
-  clearPending();
-}
-
-async function handleChampSelectEnd(nextPhase) {
-  if (isGamePhase(nextPhase)) {
-    clearPending();
-    resetSession();
-    return;
-  }
-  if (!isCustomQueue() && !state.selfDodgeRecorded && !state.lockedLocalPick) {
-    const timedOut =
-      state.localActionSeen &&
-      state.localActionDeadline > 0 &&
-      Date.now() >= state.localActionDeadline - 900;
-    if (timedOut) await recordDodge();
-  }
-  clearPending();
-  resetSession();
-}
-
-function resetSession() {
-  state.lockedLocalPick = false;
-  state.localActionSeen = false;
-  state.localActionActive = false;
-  state.localActionDeadline = 0;
-  state.penalty = null;
-  penaltyToken += 1;
-  render();
-}
-
-async function handlePhase(raw) {
-  if (!active) return;
-  const previous = state.phase;
-  const phase = typeof raw === "string" ? raw : unwrap(raw);
-  if (typeof phase !== "string" || !phase) return;
-  state.phase = phase;
-
-  if (previous === "ChampSelect" && phase !== "ChampSelect") {
-    await handleChampSelectEnd(phase);
-  }
-
-  if (phase === "ChampSelect") {
-    if (previous !== "ChampSelect") {
-      state.selfDodgeRecorded = false;
-      state.pageHiding = false;
-      resetSession();
-    }
-    await loadAccount();
-    const [session, champSelect, timer] = await Promise.all([
-      api.lcu.get(SESSION_URI).catch(() => null),
-      api.lcu.get(CHAMP_SELECT_URI).catch(() => null),
-      api.lcu.get(TIMER_URI).catch(() => null),
-    ]);
-    if (!active) return;
-    if (session) applySession(session);
-    if (champSelect) applyChampSelect(champSelect);
-    if (timer) syncTimer(timer);
-    ensureMount();
-    refreshPenalty();
-    savePending();
-  } else {
-    syncWatching();
-    unmount();
-    state.penalty = null;
-    state.showQuitButton = false;
-    if (isGamePhase(phase) || phase === "Lobby" || phase === "None") clearPending();
-  }
-}
-
-function handleSession(raw) {
-  applySession(raw);
-}
-
-function handleChampSelect(raw) {
-  applyChampSelect(raw);
-  if (state.phase === "ChampSelect") refreshPenalty();
-}
-
-function handleTimer(raw) {
-  syncTimer(raw);
-}
-
-async function requestDodge(uri) {
-  const options = { method: "POST" };
-  if (uri === QUIT_V2_URI) options.body = '["","teambuilder-draft","quitV2",""]';
-  const response = await fetch(uri, options);
-  if (!response.ok) throw new Error(`LCU ${uri} responded ${response.status}`);
-  return response;
-}
-
-async function quitOrDodge() {
-  if (!active || dodging || !state.queueId || isCustomQueue() || state.showQuitButton) return;
-  dodging = true;
+async function leave() {
+  state.busy = true;
   render();
   try {
-    let sent = false;
-    let lastError = null;
-    for (const uri of [QUIT_V2_URI, CUSTOM_CANCEL_URI]) {
-      try {
-        await requestDodge(uri);
-        sent = true;
-      } catch (error) {
-        lastError = error;
-      }
+    const response = await fetch(QUIT_URI, { method: "POST" });
+    if (!response.ok) {
+      state.closeOffered = true;
+      state.armed = true;
+      clearTimeout(armedTimer);
+      armedTimer = setTimeout(() => {
+        disarm();
+        render();
+      }, CONFIRM_MS * 2);
+      throw new Error(`quit responded ${response.status}`);
     }
-    if (!sent) throw lastError ?? new Error("No dodge endpoint accepted the request");
-    await recordDodge();
+    state.quitSent = true;
+    if (!state.queue?.isCustom) recordOwnDodge();
   } catch (error) {
-    console.warn("[Dodge Helper] quit failed:", error);
+    console.warn("[Dodge Helper] Could not leave champ select:", error);
   } finally {
-    dodging = false;
+    state.busy = false;
     render();
   }
 }
 
-function clearLegacyAnchor() {
-  for (const element of document.querySelectorAll(".perf-dodge-anchor")) {
-    element.classList.remove("perf-dodge-anchor");
+/* ---------------------------------------------------------------------------------------------
+ * Gameflow
+ * ------------------------------------------------------------------------------------------- */
+
+async function loadSummoner() {
+  if (state.summoner) return state.summoner;
+  const summoner = await api.lcu.get(SUMMONER_URI).catch(() => null);
+  if (summoner && active) state.summoner = { puuid: summoner.puuid || "", summonerId: summoner.summonerId || 0 };
+  return state.summoner;
+}
+
+function migrateLegacyStore() {
+  try {
+    const legacy = JSON.parse(localStorage.getItem(LEGACY_STORE_KEY) || "null");
+    if (!legacy || typeof legacy !== "object") return;
+    const store = readStore();
+    for (const [key, record] of Object.entries(legacy)) {
+      if (!store[key] && typeof record?.tier === "number" && typeof record?.at === "number") store[key] = record;
+    }
+    writeStore(store);
+    localStorage.removeItem(LEGACY_STORE_KEY);
+    localStorage.removeItem("perfectionist:dodge-helper:pending:v1");
+  } catch {}
+}
+
+function applySearchState(search) {
+  if (!search || !state.summoner) return;
+  for (const error of Array.isArray(search.errors) ? search.errors : []) {
+    if (!/DODGE/i.test(String(error?.errorType ?? ""))) continue;
+    const who = Number(error.penalizedSummonerId) || 0;
+    if (who && state.summoner.summonerId && who !== state.summoner.summonerId) continue;
+    learnFromPenalty(error.penaltyTimeRemaining);
   }
+}
+
+async function checkPenaltyFromServer() {
+  const search = await api.lcu.get(SEARCH_STATE_URI).catch(() => null);
+  if (active) applySearchState(search);
+}
+
+async function onChampSelectEnded(nextPhase) {
+  const gameflow = await api.lcu.get(GAMEFLOW_URI).catch(() => null);
+  const dodgers = (gameflow?.gameDodge?.dodgeIds ?? []).map(Number);
+  const me = Number(state.summoner?.summonerId) || 0;
+  // A missed lock-in or a closed client is a dodge too; the gameflow names who dodged.
+  if (me && dodgers.includes(me) && !state.quitSent && !state.queue?.isCustom) recordOwnDodge();
+  state.quitSent = false;
+  if (nextPhase === "Lobby" || nextPhase === "None") setTimeout(() => active && checkPenaltyFromServer(), 1500);
+}
+
+async function onPhase(raw) {
+  if (!active) return;
+  const phase = typeof raw === "string" ? raw : raw?.data;
+  if (typeof phase !== "string" || !phase) return;
+  const previous = state.phase;
+  state.phase = phase;
+  if (previous === "ChampSelect" && phase !== "ChampSelect") onChampSelectEnded(phase);
+  if (phase === "ChampSelect" && previous !== "ChampSelect") {
+    disarm();
+    state.penalty = null;
+    state.quitSent = false;
+    await loadSummoner();
+    const [gameflow, champSelect] = await Promise.all([
+      api.lcu.get(GAMEFLOW_URI).catch(() => null),
+      api.lcu.get(CHAMP_SELECT_URI).catch(() => null),
+    ]);
+    if (!active || state.phase !== "ChampSelect") return;
+    if (gameflow) state.queue = queueOf(gameflow) ?? state.queue;
+    if (champSelect) state.showQuitButton = Boolean(champSelect.showQuitButton);
+    refreshPenalty();
+  }
+  if (phase !== "ChampSelect") {
+    disarm();
+    state.showQuitButton = false;
+    state.closeOffered = false;
+  }
+  render();
+}
+
+function onGameflow(message) {
+  const queue = queueOf(message?.data ?? message);
+  if (!queue) return;
+  const changed = !state.queue || queue.id !== state.queue.id || queue.type !== state.queue.type;
+  state.queue = queue;
+  if (changed && state.phase === "ChampSelect") refreshPenalty();
+  render();
+}
+
+function onChampSelect(message) {
+  const session = message?.data ?? message;
+  if (!session || typeof session !== "object" || message?.eventType === "Delete") return;
+  const show = Boolean(session.showQuitButton);
+  if (show !== state.showQuitButton) {
+    state.showQuitButton = show;
+    render();
+  }
+}
+
+function onSearchState(message) {
+  applySearchState(message?.data ?? message);
+}
+
+function onFrame() {
+  // Ember can re-render the footer; put the button back if it went missing.
+  if (state.phase !== "ChampSelect") return;
+  const footer = document.querySelector(FOOTER_SELECTOR);
+  const root = document.querySelector(`.${ROOT_CLASS}`);
+  if (shouldShow() ? !(root && footer) : root) render();
+  else if (root && footer) place(root, footer);
 }
 
 async function onEnable(utils) {
   api = utils;
   active = true;
-  unmount();
-  clearLegacyAnchor();
+  migrateLegacyStore();
   removeStyle = utils.addStyle(STYLE_ID, CSS);
-  resizeObserver = typeof ResizeObserver === "function" ? new ResizeObserver(schedulePosition) : null;
-  window.addEventListener("resize", onWindowResize);
-  window.addEventListener("pagehide", onPageHide);
-  window.addEventListener("beforeunload", onPageHide);
-
-  const handlers = {
-    [PHASE_URI]: handlePhase,
-    [SESSION_URI]: handleSession,
-    [CHAMP_SELECT_URI]: handleChampSelect,
-    [TIMER_URI]: handleTimer,
-  };
-  for (const [uri, handler] of Object.entries(handlers)) {
-    try {
-      const off = utils.subscribe(uri, handler);
-      if (off) unsubscribes.push(off);
-    } catch {}
+  const handlers = [
+    [PHASE_URI, onPhase],
+    [GAMEFLOW_URI, onGameflow],
+    [CHAMP_SELECT_URI, onChampSelect],
+    [SEARCH_STATE_URI, onSearchState],
+  ];
+  for (const [uri, handler] of handlers) {
+    const off = utils.subscribe(uri, handler);
+    if (off) unsubscribes.push(off);
   }
+  unwatchFooter = utils.watch(FOOTER_SELECTOR, () => render());
+  removeFrameHook = utils.onFrame ? utils.onFrame(onFrame) : null;
+  window.addEventListener("resize", render);
 
-  for (const selector of [FOOTER_SELECTOR, SCREEN_SELECTOR]) {
-    try {
-      const off = utils.watch(selector, () => {
-        observeLayout();
-        scheduleMount();
-      });
-      if (off) unwatchers.push(off);
-    } catch {}
-  }
-
-  await loadAccount();
-  const phase = unwrap(await utils.lcu.get(PHASE_URI).catch(() => null));
-  if (!active || typeof phase !== "string" || !phase) return;
-  await reconcilePending(phase);
-  if (active) await handlePhase(phase);
-  observeLayout();
+  await loadSummoner();
+  if (!active) return;
+  const phase = await utils.lcu.get(PHASE_URI).catch(() => null);
+  if (!active) return;
+  if (phase === "Lobby" || phase === "None") checkPenaltyFromServer();
+  if (typeof phase === "string") await onPhase(phase);
 }
 
 function onDisable() {
@@ -809,44 +492,27 @@ function onDisable() {
     } catch {}
   }
   unsubscribes = [];
-  for (const off of unwatchers) {
-    try {
-      off();
-    } catch {}
-  }
-  unwatchers = [];
-  window.removeEventListener("resize", onWindowResize);
-  window.removeEventListener("pagehide", onPageHide);
-  window.removeEventListener("beforeunload", onPageHide);
-  resizeObserver?.disconnect();
-  resizeObserver = null;
-  cancelAnimationFrame(mountFrame);
-  mountFrame = 0;
-  cancelAnimationFrame(positionFrame);
-  positionFrame = 0;
-  removeDodgeWatcher();
-  unmount();
-  if (!state.pageHiding) clearPending();
+  unwatchFooter?.();
+  unwatchFooter = null;
+  removeFrameHook?.();
+  removeFrameHook = null;
+  window.removeEventListener("resize", render);
+  disarm();
+  document.querySelector(`.${ROOT_CLASS}`)?.remove();
   removeStyle?.();
   removeStyle = null;
-  state.phase = null;
-  state.queueId = 0;
-  state.isCustom = false;
-  state.showQuitButton = false;
-  state.gameMode = "";
-  state.account = null;
-  state.penalty = null;
-  state.lastSelfDodgeAt = 0;
-  state.selfDodgeRecorded = false;
-  state.lockedLocalPick = false;
-  state.localActionSeen = false;
-  state.localActionActive = false;
-  state.localActionDeadline = 0;
-  state.pageHiding = false;
-  dodging = false;
-  pendingWriteAt = 0;
-  penaltyToken = 0;
-  accountPromise = null;
+  Object.assign(state, {
+    phase: null,
+    queue: null,
+    showQuitButton: false,
+    summoner: null,
+    penalty: null,
+    armed: false,
+    busy: false,
+    quitSent: false,
+    closeOffered: false,
+  });
+  penaltyToken += 1;
   api = null;
 }
 
@@ -856,7 +522,7 @@ export function init() {
       id: PLUGIN_ID,
       name: "Dodge Helper",
       description:
-        "Adds a DODGE/QUIT button to champion select, showing the LP and queue penalty for the next dodge. It also counts accidental dodges from a missed lock-in or closing the client.",
+        "Adds a DODGE button to champ select (QUIT outside ranked) that leaves cleanly, showing the LP and queue lockout your next dodge will cost.",
       version,
       onEnable,
       onDisable,
@@ -867,7 +533,5 @@ export function init() {
     registerWith(window.PerfectionistUtils);
     return;
   }
-  addEventListener("perfectionist:utils-ready", (event) => registerWith(event.detail ?? window.PerfectionistUtils), {
-    once: true,
-  });
+  addEventListener("perfectionist:utils-ready", (event) => registerWith(event.detail ?? window.PerfectionistUtils), { once: true });
 }

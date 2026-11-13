@@ -14,3 +14,6 @@ perf-notes.md
 # archived / retired plugins - kept locally, never published or committed
 .archive/
 /.cloud-attachments
+
+# local MCP client configuration
+.mcp.json

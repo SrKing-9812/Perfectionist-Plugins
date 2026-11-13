@@ -1,5 +1,5 @@
 const PLUGIN_ID = "auto-accept";
-export const version = "1.1.3";
+export const version = "1.2.0";
 
 const PHASE_URI = "/lol-gameflow/v1/gameflow-phase";
 const READY_CHECK_URI = "/lol-matchmaking/v1/ready-check";
@@ -32,8 +32,8 @@ let sending = false;
 let attempts = 0;
 let unsubscribes = [];
 let removeStyle = null;
-let domObserver = null;
-let domTimer = null;
+let unwatchFooter = null;
+let removeFrameHook = null;
 
 function enabled() {
   try {
@@ -83,12 +83,14 @@ function resetReadyCheck() {
   attempts = 0;
 }
 
-async function acceptNow() {
+// known: ready-check data that just arrived over the WebSocket. When it says we can accept, accept in
+// the same tick instead of asking the server again first.
+async function acceptNow(known = null) {
   timer = null;
   if (!active || !enabled() || accepted || sending) return;
   sending = true;
   try {
-    const check = await api.lcu.get(READY_CHECK_URI).catch(() => null);
+    const check = known && canAccept(known) ? known : await api.lcu.get(READY_CHECK_URI).catch(() => null);
     if (!active || !enabled() || accepted || !canAccept(check)) return;
     await api.lcu.send("POST", ACCEPT_URI);
     accepted = true;
@@ -123,7 +125,7 @@ function onReadyCheck(raw) {
     resetReadyCheck();
     return;
   }
-  acceptNow();
+  acceptNow(check);
 }
 
 async function refresh() {
@@ -214,12 +216,12 @@ function ensureButton() {
   syncButton();
 }
 
-function scheduleEnsure() {
-  if (domTimer) return;
-  domTimer = setTimeout(() => {
-    domTimer = null;
-    ensureButton();
-  }, 250);
+const FOOTER_SELECTOR = ".v2-footer-notifications.ember-view, .parties-footer-notifications.ember-view";
+
+function onFrame() {
+  // Re-add the switch if the lobby footer re-rendered without it.
+  if (buttonRetry || document.getElementById(ROOT_ID)) return;
+  if (footer()) ensureButton();
 }
 
 function onEnable(utils) {
@@ -227,8 +229,8 @@ function onEnable(utils) {
   active = true;
   removeStyle = utils.addStyle(STYLE_ID, CSS);
 
-  domObserver = new MutationObserver(scheduleEnsure);
-  domObserver.observe(document.documentElement ?? document, { childList: true, subtree: true });
+  unwatchFooter = utils.watch(FOOTER_SELECTOR, () => ensureButton());
+  removeFrameHook = utils.onFrame ? utils.onFrame(onFrame) : null;
 
   gameSelectClickHandler = onGameSelectClick;
   document.addEventListener("pointerdown", gameSelectClickHandler, true);
@@ -254,10 +256,10 @@ function onDisable() {
     } catch {}
   }
   unsubscribes = [];
-  domObserver?.disconnect();
-  domObserver = null;
-  clearTimeout(domTimer);
-  domTimer = null;
+  unwatchFooter?.();
+  unwatchFooter = null;
+  removeFrameHook?.();
+  removeFrameHook = null;
   clearTimeout(buttonRetry);
   buttonRetry = null;
   if (gameSelectClickHandler) {

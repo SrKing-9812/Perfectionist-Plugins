@@ -1,5 +1,5 @@
 const PLUGIN_ID = "auto-read";
-const version = "1.2.0";
+const version = "1.3.0";
 
 const SWEEP_DEBOUNCE_MS = 500;
 const ITEM_COOLDOWN_MS = 10 * 60 * 1000;
@@ -46,14 +46,35 @@ const LEVELUP_PREFS_URI = "/lol-settings/v2/account/LCUPreferences/lol-challenge
 const TFT_BATTLE_PASS_URI = "/lol-tft-pass/v1/battle-pass";
 const TFT_HOME_HUB_URI = "/lol-tft/v1/tft/homeHub";
 const TFT_PREFS_URI = "/lol-settings/v2/account/LCUPreferences/lol-tft";
-const PIP_STYLE_ID = "auto-read-pips-style";
-const PIP_CSS = ".activity-center__tab_label_notification { display: none !important; }";
+// The pips on the home screen's activity tabs. The client shows one for every tab that is not in
+// tabsViewed, and on the patch notes tab until lastPatchNotesViewed matches the current major.minor build.
+const ACTIVITY_PREFS_URI = "/lol-settings/v2/account/LCUPreferences/activity-center";
+const ACTIVITY_NAV_URI = "/lol-activity-center/v1/content/client-nav";
+const BUILD_URI = "/system/v1/builds";
+const PATCH_NOTES_TAB = "lol-patch-notes";
+const INFO_HUB_TAB = "info-hub";
+// The client reads the activity-center setting once at startup, so a pip it already drew stays until the next
+// restart even after it was marked seen. Only those already-seen pips are hidden (they are read at the source).
+const SEEN_PIPS_STYLE_ID = "auto-read-seen-pips";
+const SEEN_PIPS_CSS = ".activity-center__tab_label_notification_pip { display: none !important; }";
+
+function hideSeenPips(hide) {
+  const existing = document.getElementById(SEEN_PIPS_STYLE_ID);
+  if (hide && !existing) {
+    const style = document.createElement("style");
+    style.id = SEEN_PIPS_STYLE_ID;
+    style.textContent = SEEN_PIPS_CSS;
+    document.head.appendChild(style);
+  } else if (!hide && existing) {
+    existing.remove();
+  }
+}
 
 let api = null;
 let active = false;
 let sweepTimer = null;
 let sweepRunning = false;
-let sweepQueued = false;
+const pendingCategories = new Set();
 let unsubscribes = [];
 const cooldowns = new Map();
 const markedGrants = new Set();
@@ -267,49 +288,92 @@ async function sweepTft() {
   await sendJson("PATCH", TFT_PREFS_URI, { data: { seenOfferIds: target }, schemaVersion: 1 }).catch(() => {});
 }
 
-function syncPips() {
-  const wanted = active && on("pips");
-  let style = document.getElementById(PIP_STYLE_ID);
-  if (wanted && !style) {
-    style = document.createElement("style");
-    style.id = PIP_STYLE_ID;
-    style.textContent = PIP_CSS;
-    document.head.appendChild(style);
-  } else if (!wanted && style) {
-    style.remove();
+async function sweepPips() {
+  const [prefs, nav, build] = await Promise.all([
+    getJson(ACTIVITY_PREFS_URI).catch(() => null),
+    getJson(ACTIVITY_NAV_URI).catch(() => null),
+    getJson(BUILD_URI).catch(() => null),
+  ]);
+  const tabs = (Array.isArray(nav?.data) ? nav.data : []).map((tab) => tab?.navigationItemID).filter((id) => typeof id === "string" && id);
+  if (!tabs.length) return;
+  let viewed = {};
+  try {
+    viewed = JSON.parse(prefs?.data?.tabsViewed ?? "{}") || {};
+  } catch {}
+  const patch = String(build?.version ?? "").split(".").slice(0, 2).join(".");
+  const missing = [...tabs, INFO_HUB_TAB].filter((id) => id !== PATCH_NOTES_TAB && viewed[id] !== true);
+  const patchUnseen = Boolean(patch) && tabs.includes(PATCH_NOTES_TAB) && prefs?.data?.lastPatchNotesViewed !== patch;
+  if (!missing.length && !patchUnseen) {
+    hideSeenPips(true);
+    return;
   }
+  if (!ready("activity-pips", BULK_COOLDOWN_MS)) return;
+  stamp("activity-pips");
+  const next = { ...viewed };
+  for (const id of missing) next[id] = true;
+  const data = { tabsViewed: JSON.stringify(next) };
+  if (patchUnseen) data.lastPatchNotesViewed = patch;
+  const saved = await sendJson("PATCH", ACTIVITY_PREFS_URI, { data, schemaVersion: 1 }).then(() => true, () => false);
+  if (saved && active) hideSeenPips(true);
 }
 
-function scheduleSweep() {
+const SWEEPS = {
+  quests: () => sweepQuests(),
+  loot: () => sweepLootMarks(),
+  rewards: async () => {
+    await sweepRewards().catch(() => {});
+    await sweepIdentity().catch(() => {});
+  },
+  tft: () => sweepTft(),
+  pips: () => sweepPips(),
+  clash: () => sweepClash(),
+  ranked: () => sweepRanked(),
+  notices: () => sweepNotices(),
+};
+const ALL_CATEGORIES = Object.keys(SWEEPS);
+
+// Which category a pushed URI belongs to, so one change only re-checks what it can affect.
+const URI_CATEGORIES = new Map([
+  [MISSIONS_URI, ["quests"]],
+  [LOOT_URI, ["loot"]],
+  [CLASH_FLAGS_URI, ["clash"]],
+  [REWARDS_GRANTS_URI, ["rewards"]],
+  [LOOT_NOTIF_URI, ["rewards"]],
+  [MASTERY_NOTIF_URI, ["rewards"]],
+  ...HONOR_NOTICES.map((notice) => [notice.uri, ["rewards"]]),
+  ...IDENTITY_NOTICE_TYPES.map((type) => [`/lol-inventory/v1/notifications/${type}`, ["rewards"]]),
+  [TOKENS_PREFS_URI, ["rewards"]],
+  [LEVELUP_PREFS_URI, ["rewards"]],
+  [RANKED_NOTIF_URI, ["ranked"]],
+  [EOS_NOTIF_URI, ["ranked"]],
+  ...NOTICE_LIST_URIS.map((uri) => [uri, ["notices"]]),
+  [TFT_BATTLE_PASS_URI, ["tft"]],
+  [TFT_HOME_HUB_URI, ["tft"]],
+  [TFT_PREFS_URI, ["tft"]],
+  [ACTIVITY_PREFS_URI, ["pips"]],
+  [ACTIVITY_NAV_URI, ["pips"]],
+]);
+
+function scheduleSweep(categories = ALL_CATEGORIES) {
   if (!active) return;
+  for (const category of categories) pendingCategories.add(category);
   clearTimeout(sweepTimer);
   sweepTimer = setTimeout(runSweep, SWEEP_DEBOUNCE_MS);
 }
 
 async function runSweep() {
-  if (!active) return;
-  if (sweepRunning) {
-    sweepQueued = true;
-    return;
-  }
+  if (!active || sweepRunning) return;
   sweepRunning = true;
   try {
-    if (on("quests")) await sweepQuests().catch(() => {});
-    if (on("loot")) await sweepLootMarks().catch(() => {});
-    if (on("rewards")) {
-      await sweepRewards().catch(() => {});
-      await sweepIdentity().catch(() => {});
+    while (active && pendingCategories.size) {
+      const batch = [...pendingCategories];
+      pendingCategories.clear();
+      for (const category of batch) {
+        if (on(category)) await Promise.resolve(SWEEPS[category]()).catch(() => {});
+      }
     }
-    if (on("tft")) await sweepTft().catch(() => {});
-    if (on("clash")) await sweepClash().catch(() => {});
-    if (on("ranked")) await sweepRanked().catch(() => {});
-    if (on("notices")) await sweepNotices().catch(() => {});
   } finally {
     sweepRunning = false;
-    if (sweepQueued) {
-      sweepQueued = false;
-      scheduleSweep();
-    }
   }
 }
 
@@ -317,14 +381,14 @@ function onEnable(utils) {
   api = utils;
   active = true;
   cooldowns.clear();
-  for (const uri of [MISSIONS_URI, LOOT_URI, CLASH_FLAGS_URI, REWARDS_GRANTS_URI, LOOT_NOTIF_URI, MASTERY_NOTIF_URI, ...HONOR_NOTICES.map((n) => n.uri), RANKED_NOTIF_URI, EOS_NOTIF_URI, ...NOTICE_LIST_URIS, ...IDENTITY_NOTICE_TYPES.map((type) => `/lol-inventory/v1/notifications/${type}`), TOKENS_PREFS_URI, LEVELUP_PREFS_URI, TFT_BATTLE_PASS_URI, TFT_HOME_HUB_URI, TFT_PREFS_URI]) {
+  for (const uri of [MISSIONS_URI, LOOT_URI, CLASH_FLAGS_URI, REWARDS_GRANTS_URI, LOOT_NOTIF_URI, MASTERY_NOTIF_URI, ...HONOR_NOTICES.map((n) => n.uri), RANKED_NOTIF_URI, EOS_NOTIF_URI, ...NOTICE_LIST_URIS, ...IDENTITY_NOTICE_TYPES.map((type) => `/lol-inventory/v1/notifications/${type}`), TOKENS_PREFS_URI, LEVELUP_PREFS_URI, TFT_BATTLE_PASS_URI, TFT_HOME_HUB_URI, TFT_PREFS_URI, ACTIVITY_PREFS_URI, ACTIVITY_NAV_URI]) {
     try {
-      const off = api.subscribe(uri, scheduleSweep);
+      const categories = URI_CATEGORIES.get(uri) ?? ALL_CATEGORIES;
+      const off = api.subscribe(uri, () => scheduleSweep(categories));
       if (off) unsubscribes.push(off);
     } catch {}
   }
   scheduleSweep();
-  syncPips();
 }
 
 function onDisable() {
@@ -332,7 +396,7 @@ function onDisable() {
   clearTimeout(sweepTimer);
   sweepTimer = null;
   sweepRunning = false;
-  sweepQueued = false;
+  pendingCategories.clear();
   for (const off of unsubscribes) {
     try {
       off();
@@ -341,14 +405,15 @@ function onDisable() {
   unsubscribes = [];
   cooldowns.clear();
   markedGrants.clear();
+  hideSeenPips(false);
   api = null;
-  syncPips();
 }
 
-function onOptionChange() {
+function onOptionChange(key, value) {
   if (!active) return;
-  scheduleSweep();
-  syncPips();
+  const category = String(key).replace(/^read./, "");
+  if (value && SWEEPS[category]) scheduleSweep([category]);
+  if (category === "pips" && !value) hideSeenPips(false);
 }
 
 export function init() {
@@ -372,7 +437,7 @@ export function init() {
             { id: "clash", label: "Clash", description: "Clash tab flags and Clash notifications.", default: true },
             { id: "ranked", label: "Ranked", description: "Ranked, end-of-season and champion mastery notices.", default: true },
             { id: "notices", label: "Notices", description: "Patch, patcher, leaver buster, lobby, behavior and gameflow notices.", default: true },
-            { id: "pips", label: "Tab pips", description: "Hides the new pips on activity tabs.", default: true },
+            { id: "pips", label: "Tab pips", description: "Marks the home screen's activity tabs and patch notes as seen, so their new pips go away.", default: true },
           ],
         },
       ],

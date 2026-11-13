@@ -1,5 +1,5 @@
 const PLUGIN_ID = "auto-claimer";
-const version = "1.2.0";
+const version = "1.3.0";
 
 const SWEEP_DEBOUNCE_MS = 400;
 const CLAIM_COOLDOWN_MS = 5 * 60 * 1000;
@@ -27,7 +27,6 @@ let shopInterval = null;
 let shopRunning = false;
 let shopQueued = false;
 let unsubscribes = [];
-let sourceInstalled = false;
 const cooldowns = new Map();
 const recipes = new Map();
 
@@ -265,39 +264,6 @@ function syncShopTimer() {
   shopInterval = null;
 }
 
-function noteTraffic(url) {
-  if (!active || typeof url !== "string") return;
-  if (url.includes("/lol-store/v1/catalog")) scheduleShop();
-}
-
-function installSourceWatch() {
-  if (sourceInstalled) return;
-  sourceInstalled = true;
-  const original = window.fetch;
-  if (typeof original === "function" && !original.__perfClaimWatch) {
-    const wrapped = function (input, init) {
-      noteTraffic(typeof input === "string" ? input : (input && input.url) || "");
-      return original.call(this, input, init);
-    };
-    wrapped.__perfClaimWatch = true;
-    window.fetch = wrapped;
-  }
-  const proto = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
-  if (proto && !proto.open.__perfClaimWatch) {
-    const origOpen = proto.open;
-    const origSend = proto.send;
-    proto.open = function (method, url, ...rest) {
-      this.__perfClaimUrl = typeof url === "string" ? url : "";
-      return origOpen.call(this, method, url, ...rest);
-    };
-    proto.open.__perfClaimWatch = true;
-    proto.send = function (...args) {
-      noteTraffic(this.__perfClaimUrl || "");
-      return origSend.apply(this, args);
-    };
-  }
-}
-
 function onEnable(utils) {
   api = utils;
   active = true;
@@ -354,8 +320,6 @@ function onOptionChange(key) {
 }
 
 export function init() {
-  installSourceWatch();
-
   const registerWith = (utils) => {
     utils.registerPlugin({
       id: PLUGIN_ID,

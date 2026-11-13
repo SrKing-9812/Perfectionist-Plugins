@@ -1,19 +1,20 @@
-export const version = "3.6.6";
+export const version = "4.0.0";
 
 const PLUGIN_ID = "ban-blocker";
 const STYLE_ID = "perfectionist-ban-blocker-style";
-const BTN_CLASS = "bb-toggle";
+const BADGE_CLASS = "bb-toggle";
 const SESSION_URI = "/lol-champ-select/v1/session";
+const ACTIONS_URI = "/lol-champ-select/v1/session/actions";
+const PICKABLE_URI = "/lol-champ-select/v1/pickable-champion-ids";
+const CHAMPION_SUMMARY_URI = "/lol-game-data/assets/v1/champion-summary.json";
+const ROWS_SELECTOR = ".summoner-array.your-party";
 
-const RESEND_AFTER_MS = 150;
-const RESCHEDULE_MS = RESEND_AFTER_MS + 20;
-const MAX_IN_FLIGHT = 3;
-const FAIL_COOLDOWN_MS = 400;
-const FAIL_COOLDOWN_MAX_MS = 3000;
-const POLL_MS = 500;
-const ENSURE_MS = 300;
-const DETECT_RETRY_MS = 250;
-const GONE_RESET_MS = 1500;
+// A PATCH that the session has not reflected yet is re-sent after this long (the server can drop an intent
+// that lands while the session is mid-update). Kept short: a teammate can lock a ban in a fraction of a second.
+const CONFIRM_MS = 220;
+const MAX_SENDS = 4;
+// Safety net only: the session WebSocket push is the fast path. Polling runs only while a block is active.
+const POLL_MS = 1000;
 
 const BAN_GLYPH_SVG =
   "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'>" +
@@ -22,689 +23,443 @@ const BAN_GLYPH_SVG =
 const BAN_GLYPH = `data:image/svg+xml,${encodeURIComponent(BAN_GLYPH_SVG)}`;
 
 const CSS = `
-.swap-button-component.${BTN_CLASS} {
-  position: absolute !important;
-  top: -2px !important;
-  right: -2px !important;
-  left: auto !important;
-  bottom: auto !important;
-  z-index: 50 !important;
-  pointer-events: auto !important;
+.swap-button-component.${BADGE_CLASS} {
+  position: absolute !important; top: -2px !important; right: -2px !important; left: auto !important; bottom: auto !important;
+  z-index: 50 !important; pointer-events: auto !important;
 }
-.swap-button-component.${BTN_CLASS} .icon {
-  -webkit-mask-image: url("${BAN_GLYPH}") !important;
-  mask-image: url("${BAN_GLYPH}") !important;
-  -webkit-mask-size: 70% 70% !important;
-  mask-size: 70% 70% !important;
+.swap-button-component.${BADGE_CLASS} .icon {
+  -webkit-mask-image: url("${BAN_GLYPH}") !important; mask-image: url("${BAN_GLYPH}") !important;
+  -webkit-mask-size: 70% 70% !important; mask-size: 70% 70% !important;
 }
-.swap-button-component.${BTN_CLASS}.on .frame-color {
-  background-color: rgb(200, 170, 110) !important;
-}
-.swap-button-component.${BTN_CLASS}.on .icon {
-  background-color: rgb(1, 10, 19) !important;
-}
-.swap-button-component.${BTN_CLASS}.on .frame-color:hover {
-  background-color: rgb(240, 230, 210) !important;
-}
-.swap-button-component.${BTN_CLASS}.unresolved {
-  opacity: 0.35 !important;
-  cursor: default !important;
-}
+.swap-button-component.${BADGE_CLASS}.on .frame-color { background-color: rgb(200, 170, 110) !important; }
+.swap-button-component.${BADGE_CLASS}.on .icon { background-color: rgb(1, 10, 19) !important; }
+.swap-button-component.${BADGE_CLASS}.on .frame-color:hover { background-color: rgb(240, 230, 210) !important; }
+.swap-button-component.${BADGE_CLASS}.on.warn .frame-color { background-color: rgb(190, 30, 55) !important; }
 `;
 
 let api = null;
+let active = false;
 let removeStyle = null;
 let unsubscribe = null;
+let unwatchRows = null;
+let removeFrameHook = null;
 let pollTimer = null;
-let ensureTimer = null;
-let refreshTimer = null;
-let pumpTimer = null;
-let goneTimer = null;
-let observer = null;
-let pollInFlight = false;
-let uiScheduled = false;
-let lastDetect = -Infinity;
+let confirmTimer = null;
 
-const enabled = new Map();
-const blockedCellIds = new Set();
-const alias = new Map();
-const fetchedNames = new Set();
-const playerNames = new Map();
-const cellToPlayer = new Map();
-const buttons = new Map();
-const swapSeen = new Set();
-const failedUntil = new Map();
-const failCount = new Map();
-let rows = [];
-let uiVisible = false;
-let goneAway = true;
-let lastSession = null;
+let session = null;
+let sessionKey = null;
+let pickable = null;
+let pickableLoading = false;
+let championNames = null;
 
-let myActionId = null;
-let target = undefined;
-let sent = 0;
-let sentAt = -Infinity;
-let inFlight = 0;
+// Blocks follow the player, not the seat: swapping positions or pick order moves players between cells.
+const blocked = new Set();
+const cellPlayer = new Map();
+const hoverSince = new Map();
+const unprotectable = new Map();
+const refusedUntil = new Map();
+const REFUSED_MS = 1500;
+const badges = new Map();
+
+// What we last asked the server for, and what the user had declared before we took over.
+let sent = { actionId: null, championId: 0, at: 0, count: 0 };
+let userIntent = null;
+let ownsIntent = false;
+let restoreDone = false;
 
 function logError(scope, error) {
   console.error(`[Ban Blocker] ${scope}`, error);
 }
 
-function norm(v) {
-  return String(v ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-function champOf(a) {
-  return a && a.championId > 0 ? a.championId : 0;
-}
-
-function isPicked(members, champ) {
-  if (!champ) return false;
-  return (members ?? []).some((p) => p.championId === champ && p.completed);
-}
-
-function canonOf(id) {
-  return (id != null && alias.get(id)) || id;
-}
-
-function isBlocked(id) {
-  return enabled.get(canonOf(id)) === true;
-}
-
-function isWeakKey(k) {
-  return typeof k === "string" && k.startsWith("cell:");
-}
-
-function payloadName(p) {
-  return norm(`${p?.gameName ?? ""}${p?.tagLine ?? ""}`) || norm(p?.summonerName) || "";
-}
-
-function keyOf(p) {
-  if (typeof p === "number") return p;
-  const strong = p?.summonerId || p?.puuid || p?.obfuscatedPuuid || p?.obfuscatedSummonerId;
-  if (strong) return strong;
-  const n = payloadName(p);
-  if (n) return `name:${n}`;
-  return p?.cellId != null ? `cell:${p.cellId}` : null;
-}
-
-function linkPlayer(p, rowName, cellId) {
-  const strong =
-    typeof p === "number" ? p : p?.summonerId || p?.puuid || p?.obfuscatedPuuid || p?.obfuscatedSummonerId;
-  const pn = typeof p === "number" ? "" : payloadName(p);
-  const rn = norm(rowName);
-  const keys = [];
-  if (strong) keys.push(strong);
-  if (pn) keys.push(`name:${pn}`);
-  if (rn && rn !== pn) keys.push(`name:${rn}`);
-  const weak = cellId != null ? `cell:${cellId}` : null;
-
-  let root = null;
-  for (const k of keys) {
-    const r = alias.get(k);
-    if (r != null) {
-      root = r;
-      break;
-    }
+function flatActions(s) {
+  const out = [];
+  for (const group of Array.isArray(s?.actions) ? s.actions : []) {
+    if (Array.isArray(group)) out.push(...group);
+    else if (group) out.push(group);
   }
-  if (root == null && keys.length) {
-    root = keys[0];
-    const prev = weak ? alias.get(weak) : null;
-    if (prev != null && isWeakKey(prev) && enabled.has(prev)) {
-      if (!enabled.has(root)) enabled.set(root, enabled.get(prev));
-      enabled.delete(prev);
+  return out;
+}
+
+function myPickAction(s, actions) {
+  const me = s?.localPlayerCellId;
+  return actions.find((a) => a.type === "pick" && a.actorCellId === me && !a.completed) ?? null;
+}
+
+function banPhaseOpen(s, actions) {
+  return actions.some((a) => a.type === "ban" && !a.completed);
+}
+
+function playerKey(p) {
+  return p?.puuid || p?.obfuscatedPuuid || (p?.summonerId ? `s:${p.summonerId}` : "") || p?.obfuscatedSummonerId || `cell:${p?.cellId}`;
+}
+
+function isBlockedCell(cell) {
+  const key = cellPlayer.get(cell);
+  return key !== undefined && blocked.has(key);
+}
+
+function takenByAlly(s, championId) {
+  return (s?.myTeam ?? []).some((p) => p.championId === championId && p.cellId !== s.localPlayerCellId);
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * Decision engine: runs synchronously on every session push and fires the PATCH in the same tick.
+ * ------------------------------------------------------------------------------------------- */
+
+function pickThreat(s, actions) {
+  const me = s.localPlayerCellId;
+  const now = performance.now();
+  let best = null;
+  for (const a of actions) {
+    if (a.type !== "ban" || a.completed || a.actorCellId === me || !isBlockedCell(a.actorCellId)) continue;
+    const champ = a.championId > 0 ? a.championId : 0;
+    const prev = hoverSince.get(a.actorCellId);
+    if (!prev || prev.championId !== champ) hoverSince.set(a.actorCellId, { championId: champ, at: now });
+    if (!champ || takenByAlly(s, champ)) continue;
+    if ((pickable && !pickable.has(champ)) || (refusedUntil.get(champ) ?? 0) > now) {
+      unprotectable.set(a.actorCellId, champ);
+      continue;
     }
+    unprotectable.delete(a.actorCellId);
+    const since = hoverSince.get(a.actorCellId).at;
+    const candidate = { championId: champ, cell: a.actorCellId, inProgress: a.isInProgress === true, since };
+    if (!best) {
+      best = candidate;
+      continue;
+    }
+    // Prefer bans that are live right now, then keep the champion we already hold (no flip-flopping),
+    // then the most recent hover (the one most likely to be locked next).
+    const score = (c) => (c.inProgress ? 4 : 0) + (c.championId === sent.championId ? 2 : 0);
+    const diff = score(candidate) - score(best);
+    if (diff > 0 || (diff === 0 && candidate.since > best.since)) best = candidate;
   }
-  if (root == null) root = (weak && alias.get(weak)) || weak;
-  if (root == null) return null;
-  for (const k of keys) alias.set(k, root);
-  if (weak) alias.set(weak, root);
-  return root;
+  return best;
 }
 
-function pickStarted(s) {
-  const actions = s?.actions?.flat?.() ?? [];
-  return actions.some((a) => a.type === "pick" && (a.isInProgress || a.completed));
-}
-
-function banPending(s) {
-  const actions = s?.actions?.flat?.() ?? [];
-  const bans = actions.filter((a) => a.type === "ban");
-  if (!bans.length) return true;
-  if (bans.some((a) => !a.completed)) return true;
-  const phase = s?.timer?.phase;
-  if (phase && phase !== "BAN_PICK") return false;
-  return !pickStarted(s);
-}
-
-function pump() {
-  if (target === undefined || myActionId == null) return;
-  if (inFlight >= MAX_IN_FLIGHT) return;
-  if (sent === target && performance.now() - sentAt < RESEND_AFTER_MS) return;
-  fire(myActionId, target);
-}
-
-function fire(id, champ) {
-  if (id == null) return;
-  sent = champ;
-  sentAt = performance.now();
-  inFlight++;
-  clearTimeout(pumpTimer);
-  pumpTimer = setTimeout(pump, RESCHEDULE_MS);
-  fetch(`${SESSION_URI}/actions/${id}`, {
+function patch(actionId, championId) {
+  sent = {
+    actionId,
+    championId,
+    at: performance.now(),
+    count: sent.actionId === actionId && sent.championId === championId ? sent.count + 1 : 1,
+  };
+  fetch(`${ACTIONS_URI}/${actionId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ championId: champ }),
+    body: JSON.stringify({ championId }),
   })
-    .then((r) => {
-      if (r.ok) {
-        failCount.delete(champ);
-        return;
-      }
-      const n = failCount.get(champ) ?? 0;
-      failCount.set(champ, n + 1);
-      failedUntil.set(champ, performance.now() + Math.min(FAIL_COOLDOWN_MS * 2 ** n, FAIL_COOLDOWN_MAX_MS));
-      if (target === champ) target = undefined;
-      if (sent === champ) sent = 0;
+    .then((response) => {
+      if (response.ok || !active) return;
+      // The server refused this champion for us (not owned, disabled, mid-update...). Back off briefly and
+      // let the next evaluation protect another hovered champion if there is one.
+      refusedUntil.set(championId, performance.now() + REFUSED_MS);
+      if (session) evaluate(session);
+      renderBadges();
+    })
+    .catch(() => {});
+  scheduleConfirm();
+}
+
+function scheduleConfirm() {
+  clearTimeout(confirmTimer);
+  confirmTimer = setTimeout(() => {
+    confirmTimer = null;
+    if (session) evaluate(session);
+  }, CONFIRM_MS);
+}
+
+function evaluate(s) {
+  const actions = flatActions(s);
+  const myPick = myPickAction(s, actions);
+  if (!myPick || myPick.isInProgress) return;
+  const current = myPick.championId > 0 ? myPick.championId : 0;
+
+  const threat = blocked.size ? pickThreat(s, actions) : null;
+  if (threat) {
+    if (!ownsIntent) {
+      ownsIntent = true;
+      restoreDone = false;
+      userIntent = current;
+    }
+    if (current === threat.championId) return;
+    const resend = sent.actionId === myPick.id && sent.championId === threat.championId;
+    if (resend && (sent.count >= MAX_SENDS || performance.now() - sent.at < CONFIRM_MS)) return;
+    patch(myPick.id, threat.championId);
+    return;
+  }
+
+  // Nothing to protect any more. Once the blocked teammates are done banning, give the user back the pick
+  // they had declared before we stepped in.
+  if (!ownsIntent || restoreDone) return;
+  const blockedBansLeft = actions.some((a) => a.type === "ban" && !a.completed && isBlockedCell(a.actorCellId));
+  if (blockedBansLeft && blocked.size) return;
+  restoreDone = true;
+  ownsIntent = false;
+  if (current === sent.championId && userIntent !== null && userIntent !== current) patch(myPick.id, userIntent);
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * Session handling
+ * ------------------------------------------------------------------------------------------- */
+
+// Identifies one champ select. It must not change when players swap seats, or the blocks would be lost.
+function keyOf(s) {
+  if (Number(s?.gameId) > 0) return `game:${s.gameId}`;
+  return `team:${(s?.myTeam ?? []).map(playerKey).sort().join(",")}`;
+}
+
+function resetSession() {
+  blocked.clear();
+  cellPlayer.clear();
+  hoverSince.clear();
+  unprotectable.clear();
+  refusedUntil.clear();
+  sent = { actionId: null, championId: 0, at: 0, count: 0 };
+  userIntent = null;
+  ownsIntent = false;
+  restoreDone = false;
+  pickable = null;
+  session = null;
+  sessionKey = null;
+  clearTimeout(confirmTimer);
+  confirmTimer = null;
+  syncPolling();
+  removeBadges();
+}
+
+function loadPickable() {
+  if (pickableLoading || !api) return;
+  pickableLoading = true;
+  api.lcu
+    .get(PICKABLE_URI)
+    .then((ids) => {
+      if (active && Array.isArray(ids) && ids.length) pickable = new Set(ids);
     })
     .catch(() => {})
     .finally(() => {
-      inFlight--;
-      pump();
+      pickableLoading = false;
     });
 }
 
-function decide(s) {
-  const m = s?.myTeam ?? [];
-  const actions = s?.actions?.flat?.() ?? [];
-  const me = s?.localPlayerCellId;
-
-  cellToPlayer.clear();
-  for (const p of m) {
-    const row = rows.find((r) => (r.cell ?? r.slotId) === p.cellId);
-    cellToPlayer.set(p.cellId, linkPlayer(p, row?.name, p.cellId));
+function applySession(s) {
+  if (!s || !Array.isArray(s.myTeam)) return;
+  const key = keyOf(s);
+  if (key !== sessionKey) {
+    resetSession();
+    sessionKey = key;
   }
-
-  let myPick = null;
-  for (const a of actions) {
-    if (a.type === "pick" && a.actorCellId === me && !a.completed) {
-      myPick = a;
-      break;
-    }
+  session = s;
+  cellPlayer.clear();
+  for (const member of s.myTeam) cellPlayer.set(member.cellId, playerKey(member));
+  if (!pickable) loadPickable();
+  try {
+    evaluate(s);
+  } catch (error) {
+    logError("decision failed.", error);
   }
-  myActionId = myPick ? myPick.id : null;
+  syncPolling();
+  renderBadges();
+}
 
-  const blockedCells = new Set(
-    m.filter((p) => blockedCellIds.has(p.cellId) || isBlocked(cellToPlayer.get(p.cellId))).map((p) => p.cellId),
+function onSessionPush(message) {
+  if (!active) return;
+  if (message?.eventType === "Delete") {
+    resetSession();
+    return;
+  }
+  applySession(message?.data ?? message);
+}
+
+function syncPolling() {
+  const wanted = active && session && blocked.size > 0 && banPhaseOpen(session, flatActions(session));
+  if (wanted && !pollTimer) {
+    pollTimer = setInterval(() => {
+      api?.lcu
+        .get(SESSION_URI)
+        .then((s) => applySession(s))
+        .catch(() => {});
+    }, POLL_MS);
+  } else if (!wanted && pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * UI: one BLOCK badge on every teammate's champion icon while bans are still open.
+ * ------------------------------------------------------------------------------------------- */
+
+// Ally rows render in myTeam order (placeholder rows are "removed"). The local player's row (.is-self)
+// confirms the alignment; slot ids are the fallback for layouts where the order differs.
+function allyRows(s) {
+  const party = document.querySelector(ROWS_SELECTOR);
+  if (!party) return [];
+  const rows = [...party.querySelectorAll(".summoner-object")].filter(
+    (row) => !row.closest(".summoner-wrapper")?.classList.contains("removed"),
   );
-
-  let threat = 0;
-  for (const a of actions) {
-    if (a.type !== "ban" || a.completed || a.actorCellId === me) continue;
-    if (!blockedCells.has(a.actorCellId)) continue;
-    const champ = champOf(a);
-    if (!champ || isPicked(m, champ)) continue;
-    if ((failedUntil.get(champ) ?? 0) > performance.now()) continue;
-    threat = champ;
+  const team = s?.myTeam ?? [];
+  if (!rows.length || !team.length) return [];
+  const selfRow = rows.findIndex((row) => row.classList.contains("is-self"));
+  const selfCell = team.findIndex((p) => p.cellId === s.localPlayerCellId);
+  if (rows.length === team.length && (selfRow < 0 || selfRow === selfCell)) {
+    return rows.map((row, index) => ({ row, cell: team[index].cellId }));
   }
-
-  if (threat && champOf(myPick) === threat) {
-    target = undefined;
-    sent = threat;
-  } else if (threat) {
-    target = threat;
-  } else {
-    target = undefined;
-  }
-}
-
-function onSessionGone() {
-  sent = 0;
-  target = undefined;
-  clearTimeout(pumpTimer);
-  failedUntil.clear();
-  failCount.clear();
-  cellToPlayer.clear();
-  lastSession = null;
-  goneAway = true;
-  uiVisible = false;
-  blockedCellIds.clear();
-  swapSeen.clear();
-  removeButtons();
-  if (!goneTimer) {
-    goneTimer = setTimeout(() => {
-      goneTimer = null;
-      enabled.clear();
-      alias.clear();
-      playerNames.clear();
-      fetchedNames.clear();
-    }, GONE_RESET_MS);
-  }
-}
-
-function onSession(raw) {
-  try {
-    const msg = raw ?? {};
-    if (msg.eventType === "Delete") {
-      onSessionGone();
-      return;
-    }
-    let s = msg.data ?? msg;
-    if (s && !s.myTeam && typeof s.phase === "string") {
-      pump();
-      return;
-    }
-    if (!s?.myTeam) return;
-    clearTimeout(goneTimer);
-    goneTimer = null;
-    goneAway = false;
-    lastSession = s;
-
-    decide(s);
-    pump();
-    scheduleUi();
-  } catch (err) {
-    logError("session handling failed.", err);
-  }
-}
-
-function detectRows() {
-  try {
-    const nodes = document.querySelectorAll("div.summoner-array.your-party div.summoner-object");
-    const list = nodes.length ? nodes : document.querySelectorAll("div.summoner-object.left");
-    const found = [];
-    for (const e of list) {
-      const slot = /slot-id-(\d+)/.exec(String(e.className));
-      const nameNode = e.querySelector(".summoner-name");
-      found.push({
-        el: e,
-        slotId: slot ? Number(slot[1]) : null,
-        name: (nameNode?.textContent ?? "").trim(),
-        circle: e.querySelector(".champion-icon-container"),
-      });
-    }
-    if (!found.length) return [];
-    return found.map((r, i) => ({
-      ...r,
-      index: i,
-      player: rows[i]?.el === r.el ? (rows[i]?.player ?? null) : null,
-      cell: rows[i]?.el === r.el ? (rows[i]?.cell ?? null) : null,
-    }));
-  } catch (err) {
-    logError("row detection failed.", err);
-    return [];
-  }
-}
-
-function getRows() {
-  const connected = rows.length > 0 && rows.every((r) => r.el.isConnected);
-  if (connected) return rows;
-  const now = performance.now();
-  if (rows.length === 0 && now - lastDetect < DETECT_RETRY_MS) return rows;
-  lastDetect = now;
-  const found = detectRows();
-  if (found.length) rows = found;
-  else if (!document.querySelector("div.summoner-object")) rows = [];
-  return rows;
-}
-
-function ensureName(cell) {
-  const strong = cell?.summonerId || cell?.puuid;
-  if (!strong || fetchedNames.has(strong)) return;
-  const get = api?.lcu?.get;
-  if (!get) return;
-  fetchedNames.add(strong);
-  const byPuuid = typeof strong === "string" && strong.length > 20;
-  const path = byPuuid ? `/lol-summoner/v2/summoners/puuid/${strong}` : `/lol-summoner/v1/summoners/${strong}`;
-  get(path)
-    .then((data) => {
-      const names = [norm(data?.displayName), norm(data?.gameName)].filter(Boolean);
-      if (!names.length) return;
-      const root = canonOf(strong);
-      playerNames.set(root, [...new Set([...(playerNames.get(root) ?? []), ...names])]);
+  const cells = new Set(team.map((p) => p.cellId));
+  const offset = team.length && Math.min(...team.map((p) => p.cellId)) >= 5 ? 5 : 0;
+  return rows
+    .map((row) => {
+      const slot = /slot-id-(\d+)/.exec(row.className);
+      if (!slot) return null;
+      const id = Number(slot[1]);
+      const cell = cells.has(id) ? id : cells.has(id + offset) ? id + offset : null;
+      return cell === null ? null : { row, cell };
     })
-    .catch(() => fetchedNames.delete(strong));
+    .filter(Boolean);
 }
 
-function nameMatches(rowName, id) {
-  const rn = norm(rowName);
-  if (!rn) return false;
-  return (playerNames.get(canonOf(id)) ?? []).some(
-    (n) => n === rn || (n.length >= 3 && rn.length >= 3 && (n.startsWith(rn) || rn.startsWith(n))),
-  );
-}
-
-function bindRowsToTeam(session) {
-  const cells = session?.myTeam ?? [];
-  const list = getRows();
-  if (!list.length || !cells.length) return;
-  for (const c of cells) ensureName(c);
-
-  const selfIdx = list.findIndex((r) => isSelfRow(r));
-  const selfCellIdx =
-    session?.localPlayerCellId != null ? cells.findIndex((c) => c.cellId === session.localPlayerCellId) : -1;
-
-  // The DOM can label allied rows 0-4 while the session uses cell IDs 5-9 (red side).
-  // If every row still has a unique matching cell, slot IDs are reliable; otherwise
-  // align by the local row's position in myTeam, then fall back to row order.
-  const bySlot = list.map((r) =>
-    r.slotId != null ? cells.find((c) => c.cellId === r.slotId) ?? null : null,
-  );
-  const slotMapComplete =
-    bySlot.every(Boolean) && new Set(bySlot.map((c) => c.cellId)).size === list.length;
-  let pick;
-  if (slotMapComplete) {
-    pick = (r) => bySlot[r.index] ?? null;
-  } else {
-    const shift = selfIdx >= 0 && selfCellIdx >= 0 ? selfCellIdx - selfIdx : 0;
-    pick = (r) => cells[r.index + shift] ?? null;
+function championName(id) {
+  if (!championNames && api) {
+    championNames = new Map();
+    api.lcu
+      .get(CHAMPION_SUMMARY_URI, { ttl: 60 * 60 * 1000 })
+      .then((list) => {
+        for (const c of Array.isArray(list) ? list : []) championNames.set(c.id, c.name);
+        renderBadges();
+      })
+      .catch(() => {
+        championNames = null;
+      });
   }
-
-  for (const r of list) {
-    const rowName = norm(r.name);
-    const cell =
-      pick(r) ??
-      cells.find((c) => rowName && (norm(c.summonerName) === rowName || payloadName(c) === rowName)) ??
-      cells.find((c) => nameMatches(r.name, keyOf(c)));
-    if (cell) {
-      r.cell = cell.cellId;
-      r.player = linkPlayer(cell, r.name, cell.cellId);
-      cellToPlayer.set(cell.cellId, r.player);
-    } else {
-      r.player = null;
-    }
-  }
+  return championNames?.get(id) ?? "that champion";
 }
 
-function stopEvent(e) {
-  if (!e) return;
-  e.stopPropagation();
-  e.preventDefault();
+function badgeTitle(cell) {
+  if (!isBlockedCell(cell)) return "Block this teammate's bans";
+  const champ = unprotectable.get(cell);
+  if (champ) return `Blocked, but ${championName(champ)} can't be declared as your pick (not available to you), so this ban can't be stopped.`;
+  return "Blocked: the champion they hover to ban is declared as your pick. Click to allow their bans.";
 }
 
-function cellForRow(r) {
-  if (!r) return null;
-  if (r.cell != null) return r.cell;
-  const cells = lastSession?.myTeam ?? [];
-  if (!cells.length) return r.slotId ?? null;
-  const direct = r.slotId != null ? cells.find((c) => c.cellId === r.slotId) : null;
-  if (direct) return direct.cellId;
-  const selfIdx = rows.findIndex((x) => isSelfRow(x));
-  const selfCellIdx =
-    lastSession?.localPlayerCellId != null
-      ? cells.findIndex((c) => c.cellId === lastSession.localPlayerCellId)
-      : -1;
-  const shift = selfIdx >= 0 && selfCellIdx >= 0 ? selfCellIdx - selfIdx : 0;
-  return cells[r.index + shift]?.cellId ?? cells[r.index]?.cellId ?? null;
-}
-
-function badgeCell(btn) {
-  const rowEl = btn.closest(".summoner-object");
-  const r = rowEl ? rows.find((x) => x.el === rowEl) : rows[Number(btn.dataset.slot)];
-  const cell = cellForRow(r) ?? (btn.dataset.cell ? Number(btn.dataset.cell) : null);
-  return cell == null ? null : Number(cell);
-}
-
-function playerForBadge(btn) {
-  const rowEl = btn.closest(".summoner-object");
-  const r = rowEl ? rows.find((x) => x.el === rowEl) : rows[Number(btn.dataset.slot)];
-  const cell = badgeCell(btn);
-  const member = cell == null ? null : (lastSession?.myTeam ?? []).find((p) => p.cellId === cell);
-  if (member) {
-    const id = linkPlayer(member, r?.name, cell);
-    cellToPlayer.set(cell, id);
-    return canonOf(id);
-  }
-  const byCell = cell == null ? null : cellToPlayer.get(cell) ?? null;
-  return canonOf(byCell ?? r?.player ?? null);
-}
-
-function toggle(btn) {
-  if (lastSession) {
-    bindRowsToTeam(lastSession);
-    decide(lastSession);
-  }
-  const cell = badgeCell(btn);
-  const myCell = lastSession?.localPlayerCellId;
-  if (cell == null || (myCell != null && cell === myCell)) return;
-  const next = !blockedCellIds.has(cell);
-  if (next) blockedCellIds.add(cell);
-  else blockedCellIds.delete(cell);
-  const id = playerForBadge(btn);
-  if (id != null) enabled.set(id, next);
-  renderButtons();
-  if (lastSession) {
-    decide(lastSession);
-    pump();
-  }
-  queueRefresh();
-}
-
-function buildBadge(slot) {
-  const btn = document.createElement("div");
-  btn.className = `swap-button-component ${BTN_CLASS}`;
-  btn.dataset.slot = String(slot);
-  btn.dataset.bb = "1";
-  btn.innerHTML =
-    '<div class="swap-button--btn uikit-framed-icon">' +
-    '<div class="outer-mask interactive">' +
-    '<div class="frame-color" style="padding: 2px;">' +
-    '<div class="icon"></div>' +
-    "</div></div></div>";
-  for (const type of ["mouseenter", "mouseleave", "mousedown", "mouseup", "click"]) {
-    btn.addEventListener(type, (e) => {
-      stopEvent(e);
-      if (type === "click") toggle(btn);
-    });
-  }
-  return btn;
-}
-
-function isSelfRow(r) {
-  if (r.el.classList.contains("is-self")) return true;
-  return lastSession?.localPlayerCellId != null && (r.cell ?? r.slotId) === lastSession.localPlayerCellId;
-}
-
-function rowKey(r) {
-  return String(r.cell ?? r.slotId ?? r.index);
-}
-
-function buttonKey(r) {
-  const cell = r.cell ?? r.slotId;
-  return cell == null ? `row:${r.index}` : `cell:${cell}`;
-}
-
-function nativeSwapIn(circle) {
-  if (!circle) return false;
-  return [...circle.querySelectorAll(".swap-button-component")].some((el) => el.dataset.bb !== "1");
-}
-
-function ensureButtons() {
-  const list = getRows();
-  const active = new Set();
-  for (const r of list) {
-    if (!r.circle || !r.circle.isConnected) r.circle = r.el.querySelector(".champion-icon-container");
-    if (!r.circle || !r.circle.isConnected) continue;
-    const swapKey = rowKey(r);
-    const key = buttonKey(r);
-    let btn = buttons.get(key);
-    if (isSelfRow(r)) {
-      if (btn) {
-        btn.remove();
-        buttons.delete(key);
-      }
-      continue;
-    }
-    if (nativeSwapIn(r.circle)) swapSeen.add(swapKey);
-    if (!swapSeen.has(swapKey)) {
-      if (btn) {
-        btn.remove();
-        buttons.delete(key);
-      }
-      continue;
-    }
-    if (!btn || !btn.isConnected || btn.parentElement !== r.circle) {
-      if (btn) btn.remove();
-      for (const orphan of r.circle.querySelectorAll(`:scope > .${BTN_CLASS}`)) orphan.remove();
-      btn = buildBadge(r.index);
-      r.circle.appendChild(btn);
-      buttons.set(key, btn);
-    }
-    active.add(key);
-    btn.dataset.slot = String(r.index);
-    const cell = cellForRow(r);
-    btn.dataset.cell = cell == null ? "" : String(cell);
-  }
-  for (const [key, btn] of [...buttons]) {
-    if (!active.has(key) || !btn.isConnected) {
-      btn.remove();
-      buttons.delete(key);
-    }
-  }
-}
-
-function renderButtons() {
-  const hasSession = !!lastSession?.myTeam;
-  for (const [, btn] of buttons) {
-    const id = playerForBadge(btn);
-    const cell = badgeCell(btn);
-    const on = (cell != null && blockedCellIds.has(cell)) || (id != null && isBlocked(id));
-    btn.classList.toggle("on", on);
-    btn.classList.toggle("unresolved", id == null && hasSession);
-    const title = on ? "Blocked — click to allow their bans" : "Block this teammate's bans";
-    if (btn.title !== title) btn.title = title;
-  }
-}
-
-function removeButtons() {
-  for (const btn of buttons.values()) btn.remove();
-  buttons.clear();
-  for (const el of document.querySelectorAll(`.${BTN_CLASS}[data-bb]`)) el.remove();
-}
-
-function queueRefresh() {
-  clearTimeout(refreshTimer);
-  refreshTimer = setTimeout(poll, 80);
-}
-
-function scheduleUi() {
-  if (uiScheduled) return;
-  uiScheduled = true;
-  queueMicrotask(() => {
-    uiScheduled = false;
-    try {
-      update();
-    } catch (err) {
-      logError("ui update failed.", err);
-    }
+function buildBadge(cell) {
+  const badge = document.createElement("div");
+  badge.className = `swap-button-component ${BADGE_CLASS}`;
+  badge.dataset.cell = String(cell);
+  badge.innerHTML =
+    '<div class="swap-button--btn uikit-framed-icon"><div class="outer-mask interactive">' +
+    '<div class="frame-color" style="padding: 2px;"><div class="icon"></div></div></div></div>';
+  const stop = (event) => {
+    event.stopPropagation();
+    event.preventDefault();
+  };
+  for (const type of ["mouseenter", "mouseleave", "mousedown", "mouseup", "pointerdown", "pointerup"]) badge.addEventListener(type, stop);
+  badge.addEventListener("click", (event) => {
+    stop(event);
+    toggle(Number(badge.dataset.cell));
   });
+  return badge;
 }
 
-function update() {
-  if (goneAway) return;
-  const s = lastSession;
-  if (s?.myTeam) bindRowsToTeam(s);
-  const visible = !s?.myTeam ? true : banPending(s);
-  if (visible) {
-    uiVisible = true;
-    ensureButtons();
-    renderButtons();
-  } else if (uiVisible) {
-    uiVisible = false;
-    swapSeen.clear();
-    removeButtons();
+function toggle(cell) {
+  if (!session || cell === session.localPlayerCellId) return;
+  const key = cellPlayer.get(cell);
+  if (key === undefined) return;
+  if (blocked.has(key)) {
+    blocked.delete(key);
+    unprotectable.delete(cell);
+  } else {
+    blocked.add(key);
+  }
+  evaluate(session);
+  syncPolling();
+  renderBadges();
+}
+
+function removeBadges() {
+  for (const badge of badges.values()) badge.remove();
+  badges.clear();
+  for (const stray of document.querySelectorAll(`.${BADGE_CLASS}`)) stray.remove();
+}
+
+function renderBadges() {
+  if (!active) return;
+  const s = session;
+  if (!s || !banPhaseOpen(s, flatActions(s))) {
+    if (badges.size) removeBadges();
+    return;
+  }
+  const seen = new Set();
+  for (const { row, cell } of allyRows(s)) {
+    if (cell === s.localPlayerCellId) continue;
+    const host = row.querySelector(".champion-icon-container");
+    if (!host) continue;
+    let badge = badges.get(cell);
+    if (!badge || badge.parentElement !== host) {
+      badge?.remove();
+      badge = buildBadge(cell);
+      host.appendChild(badge);
+      badges.set(cell, badge);
+    }
+    seen.add(cell);
+    const on = isBlockedCell(cell);
+    badge.classList.toggle("on", on);
+    badge.classList.toggle("warn", on && unprotectable.has(cell));
+    const title = badgeTitle(cell);
+    if (badge.title !== title) badge.title = title;
+  }
+  for (const [cell, badge] of badges) {
+    if (!seen.has(cell)) {
+      badge.remove();
+      badges.delete(cell);
+    }
   }
 }
 
-async function poll() {
-  const get = api?.lcu?.get;
-  if (!get || pollInFlight) return;
-  if (goneAway && !document.querySelector(".summoner-object")) return;
-  pollInFlight = true;
-  try {
-    onSession(await get(SESSION_URI));
-  } catch {
-    onSessionGone();
-  } finally {
-    pollInFlight = false;
+function onFrame() {
+  // Ember re-renders rows freely; re-attach badges only when one went missing.
+  if (!session) return;
+  for (const badge of badges.values()) {
+    if (!badge.isConnected) {
+      renderBadges();
+      return;
+    }
   }
+  if (badges.size === 0 && document.querySelector(ROWS_SELECTOR)) renderBadges();
 }
+
+/* ------------------------------------------------------------------------------------------- */
 
 function onEnable(utils) {
   api = utils;
-  try {
-    removeStyle = api.addStyle(STYLE_ID, CSS);
-  } catch (err) {
-    logError("style setup failed.", err);
-  }
-
-  pollTimer = setInterval(poll, POLL_MS);
-  ensureTimer = setInterval(() => {
-    if (uiVisible) update();
-  }, ENSURE_MS);
-
-  try {
-    observer = new MutationObserver(() => scheduleUi());
-    observer.observe(document.body, { childList: true, subtree: true });
-  } catch (err) {
-    logError("observer setup failed.", err);
-  }
-
-  const onPush = (msg) => onSession(msg);
-  let offs = [];
-  for (const uri of [SESSION_URI, `${SESSION_URI}/timer`]) {
-    try {
-      const off = api.subscribe(uri, onPush);
-      if (off) offs.push(off);
-    } catch (err) {
-      logError(`subscribe failed for ${uri}.`, err);
-    }
-  }
-  unsubscribe = () => {
-    for (const off of offs) {
-      try {
-        off();
-      } catch (err) {
-        logError("unsubscribe failed.", err);
-      }
-    }
-  };
-
-  poll();
+  active = true;
+  removeStyle = utils.addStyle(STYLE_ID, CSS);
+  unsubscribe = utils.subscribe(SESSION_URI, onSessionPush);
+  unwatchRows = utils.watch(ROWS_SELECTOR, () => {
+    if (!session) {
+      utils.lcu
+        .get(SESSION_URI)
+        .then((s) => applySession(s))
+        .catch(() => {});
+    } else renderBadges();
+  });
+  removeFrameHook = utils.onFrame ? utils.onFrame(onFrame) : null;
+  utils.lcu
+    .get(SESSION_URI)
+    .then((s) => applySession(s))
+    .catch(() => {});
 }
 
 function onDisable() {
+  active = false;
   unsubscribe?.();
-  unsubscribe = null;
+  unwatchRows?.();
+  removeFrameHook?.();
+  unsubscribe = unwatchRows = removeFrameHook = null;
+  resetSession();
   clearInterval(pollTimer);
-  clearInterval(ensureTimer);
-  clearTimeout(refreshTimer);
-  clearTimeout(pumpTimer);
-  clearTimeout(goneTimer);
-  pollTimer = ensureTimer = refreshTimer = pumpTimer = goneTimer = null;
-  observer?.disconnect();
-  observer = null;
-
-  uiVisible = false;
-  swapSeen.clear();
-  goneAway = true;
-  target = undefined;
-  sent = 0;
-  failedUntil.clear();
-  failCount.clear();
-  cellToPlayer.clear();
-  enabled.clear();
-  blockedCellIds.clear();
-  playerNames.clear();
-  alias.clear();
-  fetchedNames.clear();
-  lastSession = null;
-  rows = [];
-  lastDetect = -Infinity;
-  removeButtons();
-
+  pollTimer = null;
   removeStyle?.();
   removeStyle = null;
+  championNames = null;
   api = null;
 }
 
@@ -724,9 +479,5 @@ export function init() {
     registerWith(window.PerfectionistUtils);
     return;
   }
-  addEventListener(
-    "perfectionist:utils-ready",
-    (e) => registerWith(e.detail ?? window.PerfectionistUtils),
-    { once: true },
-  );
+  addEventListener("perfectionist:utils-ready", (event) => registerWith(event.detail ?? window.PerfectionistUtils), { once: true });
 }

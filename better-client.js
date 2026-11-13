@@ -1,65 +1,42 @@
 const PLUGIN_ID = "better-client";
-const version = "1.7.0";
+const version = "2.0.0";
 
-const MAX_CACHE_ENTRIES = 24;
-const MAX_CACHE_ENTRY_BYTES = 2 * 1024 * 1024;
-const MAX_CACHE_BYTES = 16 * 1024 * 1024;
-const UNGATE_MS = 1000;
-const UNGATE_IDLE_MS = 5000;
-const UNGATE_BACKOFF_AFTER = 20;
-const PHASE_POLL_FALLBACK_MS = 15000;
-const IMAGE_BATCH = 160;
-const IMAGE_QUEUE_LIMIT = 4000;
-const DECISION_CACHE_LIMIT = 256;
-const TELEMETRY_HOST = /(^|\.)(telemetry|analytics|metrics|sentry|bugsnag|crash-?report(er)?|pulse|tracking|beacon|datadog|loggly)(\.|:|$)/i;
-const TELEMETRY_PATH = /(^|\/)(lol-telemetry|lol-analytics|lol-metrics|lol-rms|rms|lol-sentry|lol-crash|telemetry|analytics|metrics|sentry|bugsnag|crash-?report\w*|tracking|beacon|tracing)(\/|\?|$)/i;
-const ASSET_PATH = /^\/lol-game-data\/assets\//i;
-const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+const PHASE_URI = "/lol-gameflow/v1/gameflow-phase";
 
-const CHAMP_SELECT_DATA = /^\/lol-champ-select\/v1\/(session|all-grid-champions|pickable-champion-ids|bannable-champion-ids)$/i;
-const CHAMP_SELECT_RETRY_MS = [120, 260, 520];
+// The client reports UI events, metrics and traces through these local endpoints and through Datadog RUM.
+// None of it is needed for the client to work; blocked calls get an empty 200 so callers carry on.
+const TELEMETRY_LOCAL = /^\/(?:telemetry\/|lol-telemetry\/|tracing\/v1\/|riotclient\/addorupdatemetric|lol-rms\/v1\/telemetry|error-monitor\/v1\/ux-logs)/i;
+const TELEMETRY_HOST = /(^|\.)(?:datadoghq\.(?:com|eu)|datadog-?intake\.\w+|sentry\.io|bugsnag\.com|browser-intake[\w.-]*|google-analytics\.com|googletagmanager\.com|doubleclick\.net|segment\.io|mixpanel\.com|amplitude\.com)$/i;
+const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+const DECISION_LIMIT = 512;
+const SWEEP_MS = 60 * 1000;
 
-const STATIC_ENDPOINTS = [
-  ["/lol-game-data/assets/", 60 * 60 * 1000],
-  ["/lol-perks/v1/perks", 60 * 60 * 1000],
-  ["/riotclient/region-locale", 60 * 1000],
-  ["/lol-summoner/v1/current-summoner", 10 * 1000],
-  ["/performance/v1/quickstats", 5000],
-];
-
-const UNGATE_SELECTORS = [
-  ".app-controls-settings",
-  ".lol-settings-button",
-  "[class*='social-panel']",
-  ".social-panel",
-  ".lol-social-panel",
-  ".lol-navigation",
-  ".lol-navigation-item",
-  "[class*='friends-list']",
-];
-const UNGATE_SELECTOR = UNGATE_SELECTORS.join(",");
-const BLOCK_MARKER = "[disabled], [aria-disabled='true'], [style*='pointer-events']";
-
-const PERF_STYLE_ID = "perfectionist-better-client-performance";
-const PERFORMANCE_CSS = `
-[class*="blur"], [class*="Blur"], [class*="backdrop"], [class*="Backdrop"] {
-  filter: none !important;
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
+const BACKGROUND_CLASS = "perf-bc-background";
+const LITE_CLASS = "perf-bc-lite";
+const STYLE_ID = "perfectionist-better-client";
+const CSS = `
+html.${BACKGROUND_CLASS} *, html.${BACKGROUND_CLASS} *::before, html.${BACKGROUND_CLASS} *::after {
+  animation-play-state: paused !important;
 }
-[class*="particle"], [class*="Particle"], [class*="parallax"], [class*="Parallax"],
-[class*="animated-background"], [class*="animatedBackground"], [class*="glow"], [class*="Glow"] {
-  animation: none !important;
-  transition: none !important;
-}
-[class*="background"] video, [class*="Background"] video { display: none !important; }
-`;
+html.${LITE_CLASS} *, html.${LITE_CLASS} *::before, html.${LITE_CLASS} *::after {
+  animation-duration: 1ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important;
+  transition-duration: 0s !important; transition-delay: 0s !important;
+  backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+}`;
 
 const OPTIONS = [
   {
+    key: "backgroundMode",
+    label: "Pause the client while you play",
+    description:
+      "While a game is running and the client is not focused, pauses the client's videos and animations. They resume the moment you open the client.",
+    default: true,
+  },
+  {
     key: "performanceMode",
     label: "Performance mode",
-    description: "Turns off background blur, decorative animation and looping background video to save GPU and CPU on weaker machines.",
+    description:
+      "For weaker PCs: stops looping background videos and animated effects, skips UI animations and turns off background blur.",
     default: false,
   },
 ];
@@ -67,707 +44,299 @@ const OPTIONS = [
 let api = null;
 let active = false;
 let phase = "None";
-let unsubscribes = [];
+let backgroundMode = false;
+let liteMode = false;
+let unsubscribe = null;
 let restores = [];
-let ungateTimer = null;
-let ungateIdle = 0;
-let phaseTimer = null;
-let phaseWatchListener = null;
-let performanceMode = false;
-let removePerformanceStyle = null;
-let cacheBytes = 0;
 
-const cache = new Map();
-const inflight = new Map();
-const blockDecisions = new Map();
-
-function baseHref() {
-  try {
-    return typeof location !== "undefined" ? location.href : "https://127.0.0.1/";
-  } catch {
-    return "https://127.0.0.1/";
-  }
+function option(key) {
+  return api?.getOption?.(PLUGIN_ID, key) === true;
 }
 
-function resolveUrl(raw, base) {
-  try {
-    return new URL(String(raw), base ?? baseHref());
-  } catch {
-    return null;
-  }
-}
+/* Telemetry */
 
-function isLocalHost(host) {
-  return LOCAL_HOSTS.has(String(host ?? "").replace(/^\[|\]$/g, ""));
-}
+const decisions = new Map();
 
-function isTelemetryUrl(raw, base) {
-  const text = typeof raw === "string" ? raw : urlOf(raw);
-  const memo = blockDecisions.get(text);
-  if (memo !== undefined) return memo;
-
-  let verdict;
+function isBlocked(raw) {
+  const text = typeof raw === "string" ? raw : raw?.url ?? raw?.href ?? String(raw ?? "");
+  const known = decisions.get(text);
+  if (known !== undefined) return known;
+  let verdict = false;
   if (text.startsWith("/") && !text.startsWith("//")) {
-    verdict = !ASSET_PATH.test(text) && TELEMETRY_PATH.test(text);
+    verdict = TELEMETRY_LOCAL.test(text);
   } else {
-    const url = resolveUrl(text, base);
-    if (!url || url.protocol === "data:" || url.protocol === "blob:") verdict = false;
-    else if (ASSET_PATH.test(url.pathname)) verdict = false;
-    else if (isLocalHost(url.hostname)) verdict = TELEMETRY_PATH.test(url.pathname);
-    else verdict = TELEMETRY_HOST.test(url.hostname) || TELEMETRY_PATH.test(url.pathname);
+    try {
+      const url = new URL(text, location.href);
+      if (url.protocol === "http:" || url.protocol === "https:") {
+        verdict = LOCAL_HOSTS.has(url.hostname) ? TELEMETRY_LOCAL.test(url.pathname) : TELEMETRY_HOST.test(url.hostname);
+      }
+    } catch {}
   }
-
-  if (blockDecisions.size >= DECISION_CACHE_LIMIT) blockDecisions.clear();
-  blockDecisions.set(text, verdict);
+  if (decisions.size >= DECISION_LIMIT) decisions.clear();
+  decisions.set(text, verdict);
   return verdict;
 }
 
-function shouldBlockUrl(raw, base) {
-  return isTelemetryUrl(raw, base);
-}
-
-function staticTtl(path) {
-  if (!path) return 0;
-  for (const [prefix, ttl] of STATIC_ENDPOINTS) {
-    if (path.startsWith(prefix)) return ttl;
-  }
-  return 0;
-}
-
-function methodOf(input, init) {
-  const method = init?.method ?? (input && typeof input === "object" && "method" in input ? input.method : "GET");
-  return String(method ?? "GET").toUpperCase();
-}
-
-function urlOf(input) {
-  if (typeof input === "string") return input;
-  if (input && typeof input === "object") {
-    if (typeof input.url === "string") return input.url;
-    if (typeof input.href === "string") return input.href;
-  }
-  return String(input);
-}
-
-function emptyJsonResponse(env) {
-  const Ctor = env?.Response ?? (typeof Response !== "undefined" ? Response : null);
-  if (!Ctor) return undefined;
-  try {
-    return new Ctor("{}", { status: 200, headers: { "Content-Type": "application/json" } });
-  } catch {
-    return undefined;
-  }
-}
-
-function evictOne(key) {
-  const entry = cache.get(key);
-  if (!entry) return;
-  cacheBytes -= entry.bytes;
-  cache.delete(key);
-}
-
-function evict(max) {
-  while (cache.size >= max) evictOne(cache.keys().next().value);
-}
-
-function storeInCache(key, ttl, response) {
-  const type = String(response.headers?.get?.("Content-Type") ?? "");
-  if (type && !/json|javascript|plain/i.test(type)) return;
-  const length = Number(response.headers?.get?.("Content-Length") ?? 0) || 0;
-  if (length > MAX_CACHE_ENTRY_BYTES) return;
-  evict(MAX_CACHE_ENTRIES);
-  cache.set(key, { at: Date.now(), ttl, res: response.clone(), bytes: length });
-  cacheBytes += length;
-  while (cacheBytes > MAX_CACHE_BYTES && cache.size > 1) {
-    evictOne(cache.keys().next().value);
-  }
-}
-
-function clearVolatileCache() {
-  for (const [key, entry] of [...cache]) {
-    if (entry.ttl < 60 * 60 * 1000) evictOne(key);
-  }
-}
-
-function champSelectDataPath(url) {
-  if (!url) return null;
-  return CHAMP_SELECT_DATA.test(url.pathname) ? url.pathname.toLowerCase() : null;
-}
-
-function isEmptyChampSelect(path, json) {
-  if (path.endsWith("/session")) {
-    if (!json || typeof json !== "object") return true;
-    return !Array.isArray(json.myTeam) || json.myTeam.length === 0;
-  }
-  return Array.isArray(json) && json.length === 0;
-}
-
-function champSelectPathOf(rawUrl) {
-  return champSelectDataPath(resolveUrl(rawUrl));
-}
-
-async function primeChampSelect(raw, path) {
-  for (const wait of [0, 120, 240]) {
-    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-    try {
-      const response = await raw(path);
-      if (!response?.ok) continue;
-      const json = await response.json();
-      if (!isEmptyChampSelect(path, json)) return;
-    } catch {}
-  }
-}
-
-function createFetch(env) {
-  const native = env.fetch.bind(env);
-
-  function repairChampSelect(input, init, request, path) {
-    let attempt = 0;
-    const step = (current) =>
-      current.then((response) => {
-        if (!active || phase !== "ChampSelect" || attempt >= CHAMP_SELECT_RETRY_MS.length) return response;
-        if (!response || !response.ok || !response.clone) return response;
-        return response.clone().json().then(
-          (json) => {
-            if (!isEmptyChampSelect(path, json)) return response;
-            const wait = CHAMP_SELECT_RETRY_MS[attempt];
-            attempt += 1;
-            return new Promise((resolve) => setTimeout(resolve, wait)).then(() => step(native(input, init)));
-          },
-          () => response,
-        );
-      });
-    return step(request);
-  }
-
-  function betterFetch(input, init) {
-    const raw = urlOf(input);
-
-    if (active && shouldBlockUrl(raw)) {
-      return Promise.resolve(emptyJsonResponse(env));
+function installFetch() {
+  const native = window.fetch;
+  const patched = function (input, init) {
+    if (active && isBlocked(typeof input === "string" ? input : input?.url ?? "")) {
+      return Promise.resolve(new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }));
     }
-
-    const method = methodOf(input, init);
-    if (method !== "GET" && method !== "HEAD") {
-      return native(input, init);
-    }
-
-    const url = resolveUrl(raw);
-    if (!url || !isLocalHost(url.hostname)) {
-      return native(input, init);
-    }
-
-    const key = `${method} ${url.pathname}${url.search}`;
-    const pending = inflight.get(key);
-    if (pending) {
-      return pending.then((response) => (response?.clone ? response.clone() : response));
-    }
-
-    const ttl = active ? staticTtl(url.pathname) : 0;
-    if (ttl) {
-      const hit = cache.get(key);
-      if (hit && Date.now() - hit.at < hit.ttl) {
-        return Promise.resolve(hit.res.clone());
-      }
-    }
-
-    let request = native(input, init);
-    const dataPath = champSelectDataPath(url);
-    if (dataPath && active && phase === "ChampSelect") {
-      request = repairChampSelect(input, init, request, dataPath);
-    }
-
-    inflight.set(key, request);
-    const done = () => inflight.delete(key);
-    request.then(done, done);
-
-    if (ttl) {
-      request.then((response) => {
-        if (!response?.ok || !active) return;
-        storeInCache(key, ttl, response);
-      }, () => {});
-    }
-    return request.then((response) => (response?.clone ? response.clone() : response));
-  }
-
-  betterFetch.__better = true;
-  betterFetch.raw = native;
-  return betterFetch;
+    return native.call(this, input, init);
+  };
+  window.fetch = patched;
+  return () => {
+    if (window.fetch === patched) window.fetch = native;
+  };
 }
 
-function emitBlockedXhr(xhr, env) {
-  const reply = "{}";
+function finishBlockedXhr(xhr) {
   try {
     Object.defineProperty(xhr, "readyState", { configurable: true, get: () => 4 });
     Object.defineProperty(xhr, "status", { configurable: true, get: () => 200 });
-    Object.defineProperty(xhr, "responseText", { configurable: true, get: () => reply });
-    Object.defineProperty(xhr, "response", { configurable: true, get: () => reply });
+    Object.defineProperty(xhr, "statusText", { configurable: true, get: () => "OK" });
+    Object.defineProperty(xhr, "responseText", { configurable: true, get: () => "{}" });
+    Object.defineProperty(xhr, "response", { configurable: true, get: () => (xhr.responseType === "json" ? {} : "{}") });
+    Object.defineProperty(xhr, "getAllResponseHeaders", { configurable: true, value: () => "content-type: application/json\r\n" });
+    Object.defineProperty(xhr, "getResponseHeader", { configurable: true, value: (name) => (/content-type/i.test(name) ? "application/json" : null) });
   } catch {}
-  const EventCtor = env.Event ?? (typeof Event !== "undefined" ? Event : null);
-  if (!EventCtor) return;
   setTimeout(() => {
-    try {
-      xhr.dispatchEvent(new EventCtor("readystatechange"));
-      xhr.dispatchEvent(new EventCtor("load"));
-      xhr.dispatchEvent(new EventCtor("loadend"));
-    } catch {}
+    for (const type of ["readystatechange", "load", "loadend"]) {
+      try {
+        xhr.dispatchEvent(new Event(type));
+      } catch {}
+    }
   }, 0);
 }
 
-function installXhr(env) {
-  const proto = env.XMLHttpRequest?.prototype;
-  if (!proto || proto.__better) return null;
+function installXhr() {
+  const proto = XMLHttpRequest.prototype;
   const nativeOpen = proto.open;
   const nativeSend = proto.send;
-  proto.open = function (method, url, ...rest) {
-    this.__betterUrl = String(url);
+  const open = function (method, url, ...rest) {
+    this.__perfBcUrl = url;
     return nativeOpen.call(this, method, url, ...rest);
   };
-  proto.send = function (body) {
-    if (active && shouldBlockUrl(this.__betterUrl)) {
-      emitBlockedXhr(this, env);
-      return undefined;
-    }
-    const path = champSelectPathOf(this.__betterUrl);
-    const raw = env.fetch?.raw;
-    if (path && raw && active && phase === "ChampSelect" && !this.__betterPrimed) {
-      this.__betterPrimed = true;
-      primeChampSelect(raw, path).finally(() => {
-        try {
-          nativeSend.call(this, body);
-        } catch {}
-      });
+  const send = function (body) {
+    if (active && this.__perfBcUrl !== undefined && isBlocked(String(this.__perfBcUrl))) {
+      finishBlockedXhr(this);
       return undefined;
     }
     return nativeSend.call(this, body);
   };
-  proto.__better = true;
+  proto.open = open;
+  proto.send = send;
   return () => {
-    proto.open = nativeOpen;
-    proto.send = nativeSend;
-    delete proto.__better;
+    if (proto.open === open) proto.open = nativeOpen;
+    if (proto.send === send) proto.send = nativeSend;
   };
 }
 
-function installBeacon(env) {
-  const nav = env.navigator;
-  if (!nav?.sendBeacon || nav.sendBeacon.__better) return null;
-  const native = nav.sendBeacon.bind(nav);
-  const patched = function (url) {
-    if (active && shouldBlockUrl(url)) return true;
-    return native(url, arguments[1]);
+function installBeacon() {
+  const nav = window.navigator;
+  if (typeof nav?.sendBeacon !== "function") return () => {};
+  const native = nav.sendBeacon;
+  const patched = function (url, data) {
+    if (active && isBlocked(String(url))) return true;
+    return native.call(this, url, data);
   };
-  patched.__better = true;
   nav.sendBeacon = patched;
   return () => {
-    nav.sendBeacon = native;
+    if (nav.sendBeacon === patched) nav.sendBeacon = native;
   };
 }
 
-let mediaObserver = null;
-let mediaScanObserver = null;
-let mediaVisibilityListener = null;
-let mediaPaused = new WeakSet();
-
-let imageObserver = null;
-let imageQueue = [];
-let imageFlushTimer = null;
-let imageFlushIdle = false;
-let imageVisibilityListener = null;
-
-function markAsyncDecode(img) {
-  if (!img || img.tagName !== "IMG" || img.decoding === "async") return 0;
+// Riot samples some sessions into Datadog RUM, which then records every interaction, resource and long task.
+function quietDatadog() {
   try {
-    img.decoding = "async";
-    return 1;
-  } catch {
-    return 0;
-  }
+    window.DD_RUM?.setTrackingConsent?.("not-granted");
+  } catch {}
+  return () => {
+    try {
+      window.DD_RUM?.setTrackingConsent?.("granted");
+    } catch {}
+  };
 }
 
-function documentView() {
+/* Media governor
+ *
+ * The client keeps looping videos and lottie animations running while they are not rendered at all (the
+ * home screen's activity tabs alone keep ~20 videos decoding forever). Media is held while nobody can see it
+ * (not rendered, or the client is in the background during a game, or it is a decorative loop in performance
+ * mode) and resumed as soon as that stops being true. Only media held here is ever resumed. */
+
+const held = new WeakSet();
+const tracked = new Set();
+let observer = null;
+
+function inBackground() {
+  return backgroundMode && phase === "InProgress" && !document.hasFocus();
+}
+
+function lottieOf(element) {
+  return element.tagName === "LOL-UIKIT-LOTTIE" ? element.animation ?? null : null;
+}
+
+function isLoop(element) {
+  return element.tagName === "VIDEO" ? element.loop : lottieOf(element)?.loop === true;
+}
+
+function isPlaying(element) {
+  if (element.tagName === "VIDEO") return !element.paused;
+  const animation = lottieOf(element);
+  return Boolean(animation) && animation.isPaused === false;
+}
+
+function rendered(element) {
+  return element.isConnected && element.getClientRects().length > 0;
+}
+
+function shouldHold(element, visible = rendered(element)) {
+  return !visible || inBackground() || (liteMode && isLoop(element));
+}
+
+function hold(element) {
+  if (!isPlaying(element)) return;
   try {
-    return document.defaultView ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function pageHidden() {
-  try {
-    return document.hidden === true;
-  } catch {
-    return false;
-  }
-}
-
-function scheduleImageFlush() {
-  if (imageFlushTimer !== null) return;
-  const view = documentView();
-  if (typeof view?.requestIdleCallback === "function") {
-    imageFlushIdle = true;
-    imageFlushTimer = view.requestIdleCallback(flushImageQueue, { timeout: 600 });
-  } else {
-    imageFlushIdle = false;
-    imageFlushTimer = setTimeout(flushImageQueue, 150);
-  }
-}
-
-function cancelImageFlush() {
-  if (imageFlushTimer === null) return;
-  const view = documentView();
-  if (imageFlushIdle && typeof view?.cancelIdleCallback === "function") view.cancelIdleCallback(imageFlushTimer);
-  else clearTimeout(imageFlushTimer);
-  imageFlushTimer = null;
-}
-
-function scanImages(root) {
-  let found;
-  try {
-    found = root.querySelectorAll("img[src]:not([decoding='async'])");
-  } catch {
-    return 0;
-  }
-  let marked = 0;
-  for (const img of found) marked += markAsyncDecode(img);
-  return marked;
-}
-
-function flushImageQueue() {
-  imageFlushTimer = null;
-  if (pageHidden()) {
-    scheduleImageFlush();
-    return;
-  }
-  const batch = imageQueue.splice(0, IMAGE_BATCH);
-  for (const root of batch) {
-    if (!root?.isConnected) continue;
-    markAsyncDecode(root);
-    scanImages(root);
-  }
-  if (imageQueue.length > 0) scheduleImageFlush();
-}
-
-function enqueueImages(root) {
-  if (!root || root.nodeType !== 1) return 0;
-  if (imageQueue.length >= IMAGE_QUEUE_LIMIT) return 0;
-  if (root.tagName !== "IMG" && root.childElementCount === 0) return 0;
-  imageQueue.push(root);
-  scheduleImageFlush();
-  return 1;
-}
-
-function pauseDecorativeVideo(video) {
-  if (!video || video.tagName !== "VIDEO" || video.paused) return;
-  if (!video.autoplay && !video.muted) return;
-  try {
-    video.pause();
-    mediaPaused.add(video);
+    if (element.tagName === "VIDEO") element.pause();
+    else lottieOf(element)?.pause();
+    held.add(element);
   } catch {}
 }
 
-function resumeDecorativeVideo(video) {
-  if (!video || !mediaPaused.has(video)) return;
-  mediaPaused.delete(video);
+function release(element) {
+  if (!held.has(element)) return;
+  held.delete(element);
+  if (!element.isConnected) return;
   try {
-    const play = video.play?.();
-    if (play?.catch) play.catch(() => {});
+    if (element.tagName === "VIDEO") {
+      if (element.loop || !element.ended) element.play()?.catch?.(() => {});
+    } else {
+      lottieOf(element)?.play();
+    }
   } catch {}
 }
 
-function installMediaIdle() {
-  if (typeof document === "undefined" || !document.documentElement) return () => {};
-  const Obs = document.defaultView?.IntersectionObserver ?? IntersectionObserver;
-  const Mut = document.defaultView?.MutationObserver ?? MutationObserver;
-  if (!Obs || !Mut) return () => {};
-  mediaObserver = new Obs(
+function settle(element, visible) {
+  if (shouldHold(element, visible)) hold(element);
+  else release(element);
+}
+
+function onMediaPlay(event) {
+  const element = event.target;
+  if (shouldHold(element)) queueMicrotask(() => shouldHold(element) && hold(element));
+}
+
+function track(element) {
+  if (tracked.has(element)) return;
+  tracked.add(element);
+  if (element.tagName === "VIDEO") element.addEventListener("play", onMediaPlay);
+  observer?.observe(element);
+}
+
+function untrack(element) {
+  observer?.unobserve(element);
+  element.removeEventListener("play", onMediaPlay);
+  tracked.delete(element);
+}
+
+function settleAll() {
+  for (const element of tracked) {
+    if (element.isConnected) settle(element);
+  }
+}
+
+function installMediaGovernor() {
+  observer = new IntersectionObserver(
     (entries) => {
-      for (const entry of entries) {
-        if (entry.isIntersecting) resumeDecorativeVideo(entry.target);
-        else pauseDecorativeVideo(entry.target);
-      }
+      for (const entry of entries) settle(entry.target, entry.isIntersecting);
     },
-    { rootMargin: "240px" },
+    { rootMargin: "64px" },
   );
-  const scan = () => {
-    for (const video of document.querySelectorAll("video")) {
-      if (video.__betterMedia) continue;
-      video.__betterMedia = true;
-      try {
-        mediaObserver.observe(video);
-      } catch {}
+  const unwatch = api.watch("video, lol-uikit-lottie", track);
+  // Lottie animations start after their JSON loads, which the observer does not see; re-check periodically.
+  const sweeper = setInterval(() => {
+    for (const element of tracked) {
+      if (!element.isConnected) untrack(element);
+      else if (element.tagName !== "VIDEO" && isPlaying(element) && shouldHold(element)) hold(element);
     }
-  };
-  scan();
-  mediaScanObserver = new Mut(scan);
-  try {
-    mediaScanObserver.observe(document.documentElement, { childList: true, subtree: true });
-  } catch {}
-  mediaVisibilityListener = () => {
-    if (pageHidden()) {
-      for (const video of document.querySelectorAll("video")) pauseDecorativeVideo(video);
-      return;
-    }
-    scan();
-    for (const video of document.querySelectorAll("video")) {
-      if (video.getClientRects().length > 0) resumeDecorativeVideo(video);
-    }
-  };
-  document.addEventListener("visibilitychange", mediaVisibilityListener);
+  }, SWEEP_MS / 4);
   return () => {
-    document.removeEventListener("visibilitychange", mediaVisibilityListener);
-    mediaVisibilityListener = null;
-    mediaScanObserver?.disconnect();
-    mediaScanObserver = null;
-    mediaObserver?.disconnect();
-    mediaObserver = null;
-    mediaPaused = new WeakSet();
+    clearInterval(sweeper);
+    unwatch();
+    observer?.disconnect();
+    observer = null;
+    for (const element of [...tracked]) {
+      untrack(element);
+      if (rendered(element)) release(element);
+    }
   };
 }
 
-function installImageDecode() {
-  if (typeof document === "undefined" || !document.documentElement) return () => {};
-  const Obs = document.defaultView?.MutationObserver ?? MutationObserver;
-  if (imageObserver || !Obs) return () => {};
-  imageObserver = new Obs((records) => {
-    let queued = 0;
-    for (const record of records) {
-      if (record.type === "attributes") {
-        if (record.target?.tagName === "IMG") queued += enqueueImages(record.target);
-        continue;
-      }
-      const nodes = record.addedNodes;
-      for (let index = 0; index < nodes.length; index++) {
-        const node = nodes[index];
-        if (node?.nodeType === 1) queued += enqueueImages(node);
-      }
-      if (queued > 400) break;
-    }
-  });
-  try {
-    imageObserver.observe(document.documentElement, { childList: true, subtree: true });
-  } catch {
-    imageObserver = null;
-    return () => {};
-  }
-  enqueueImages(document.documentElement);
-  imageVisibilityListener = () => {
-    if (pageHidden()) return;
-    enqueueImages(document.documentElement);
-    scheduleImageFlush();
-  };
-  document.addEventListener("visibilitychange", imageVisibilityListener);
+/* Background and performance modes */
+
+function applyModes() {
+  const root = document.documentElement;
+  root.classList.toggle(BACKGROUND_CLASS, active && inBackground());
+  root.classList.toggle(LITE_CLASS, active && liteMode);
+  settleAll();
+}
+
+function installModes() {
+  const removeStyle = api.addStyle(STYLE_ID, CSS);
+  window.addEventListener("focus", applyModes);
+  window.addEventListener("blur", applyModes);
+  document.addEventListener("visibilitychange", applyModes);
   return () => {
-    document.removeEventListener("visibilitychange", imageVisibilityListener);
-    imageVisibilityListener = null;
-    cancelImageFlush();
-    imageQueue = [];
-    imageObserver?.disconnect();
-    imageObserver = null;
+    window.removeEventListener("focus", applyModes);
+    window.removeEventListener("blur", applyModes);
+    document.removeEventListener("visibilitychange", applyModes);
+    document.documentElement.classList.remove(BACKGROUND_CLASS, LITE_CLASS);
+    removeStyle();
   };
 }
 
-function ungateNode(node) {
-  if (!node?.querySelectorAll) return 0;
-  let changed = 0;
-  const candidates = [];
-  try {
-    if (node.matches?.(BLOCK_MARKER)) candidates.push(node);
-    candidates.push(...node.querySelectorAll(BLOCK_MARKER));
-  } catch {
-    return 0;
-  }
-  for (const element of candidates) {
-    if (element.disabled === true) {
-      element.disabled = false;
-      changed += 1;
-    }
-    if (element.hasAttribute?.("disabled")) {
-      element.removeAttribute("disabled");
-      changed += 1;
-    }
-    if (element.getAttribute?.("aria-disabled") === "true") {
-      element.removeAttribute("aria-disabled");
-      changed += 1;
-    }
-    if (element.style?.pointerEvents === "none") {
-      element.style.pointerEvents = "";
-      changed += 1;
-    }
-  }
-  return changed;
-}
-
-function ungatePass() {
-  if (!active || phase !== "InProgress") return 0;
-  let nodes;
-  try {
-    nodes = document.querySelectorAll(UNGATE_SELECTOR);
-  } catch {
-    return 0;
-  }
-  let changed = 0;
-  for (const node of nodes) changed += ungateNode(node);
-  return changed;
-}
-
-function ungateDelay() {
-  return ungateIdle >= UNGATE_BACKOFF_AFTER ? UNGATE_IDLE_MS : UNGATE_MS;
-}
-
-function ungateTick() {
-  ungateTimer = null;
-  if (!active || phase !== "InProgress") return;
-  if (pageHidden()) {
-    ungateTimer = setTimeout(ungateTick, UNGATE_IDLE_MS);
-    return;
-  }
-  const changed = ungatePass();
-  ungateIdle = changed > 0 ? 0 : ungateIdle + 1;
-  ungateTimer = setTimeout(ungateTick, ungateDelay());
-}
-
-function startUngate() {
-  if (ungateTimer) return;
-  ungateIdle = 0;
-  ungateTick();
-}
-
-function stopUngate() {
-  clearTimeout(ungateTimer);
-  ungateTimer = null;
-  ungateIdle = 0;
-}
-
-function onPhase(next) {
-  const value = typeof next === "string" ? next : next?.phase ?? phase;
-  if (!value || value === phase) {
-    if (value === "InProgress") startUngate();
-    return;
-  }
-  phase = value;
-  clearVolatileCache();
-  if (phase === "InProgress") startUngate();
-  else stopUngate();
-}
-
-async function refreshPhase() {
-  if (!active || pageHidden()) return;
-  try {
-    const current = await api?.lcu?.get?.("/lol-gameflow/v1/gameflow-phase");
-    if (current) onPhase(current);
-  } catch {}
-}
-
-function startPhaseWatch() {
-  stopPhaseWatch();
-  if (unsubscribes.length === 0) {
-    phaseTimer = setInterval(() => {
-      if (!pageHidden()) refreshPhase();
-    }, PHASE_POLL_FALLBACK_MS);
-  }
-  phaseWatchListener = () => {
-    if (!pageHidden()) refreshPhase();
-  };
-  document.addEventListener("visibilitychange", phaseWatchListener);
-}
-
-function stopPhaseWatch() {
-  clearInterval(phaseTimer);
-  phaseTimer = null;
-  if (phaseWatchListener) {
-    document.removeEventListener("visibilitychange", phaseWatchListener);
-    phaseWatchListener = null;
-  }
-}
-
-function applyPerformanceMode() {
-  if (!api) return;
-  if (performanceMode) {
-    if (!removePerformanceStyle) removePerformanceStyle = api.addStyle(PERF_STYLE_ID, PERFORMANCE_CSS);
-    return;
-  }
-  if (removePerformanceStyle) {
-    removePerformanceStyle();
-    removePerformanceStyle = null;
-  }
-}
-
-function installNetwork(env) {
-  const installed = [];
-  try {
-    const originalFetch = env.fetch;
-    env.fetch = createFetch(env);
-    installed.push(() => {
-      env.fetch = originalFetch;
-    });
-  } catch {}
-  const xhr = installXhr(env);
-  if (xhr) installed.push(xhr);
-  const beacon = installBeacon(env);
-  if (beacon) installed.push(beacon);
-  return () => {
-    for (const restore of installed.reverse()) {
-      try {
-        restore();
-      } catch {}
-    }
-  };
+function onPhase(raw) {
+  const next = typeof raw === "string" ? raw : raw?.data;
+  if (typeof next !== "string" || !next || next === phase) return;
+  phase = next;
+  applyModes();
 }
 
 function onEnable(utils) {
   api = utils;
   active = true;
-  restores = [installNetwork(window), installImageDecode(), installMediaIdle()];
-  unsubscribes = [];
-  try {
-    const off = api.subscribe("/lol-gameflow/v1/gameflow-phase", onPhase);
-    if (off) unsubscribes.push(off);
-  } catch {}
-  try {
-    api
-      .lcu?.get?.("/lol-gameflow/v1/gameflow-phase")
-      .then((value) => onPhase(value))
-      .catch(() => {});
-  } catch {}
-  startPhaseWatch();
-  performanceMode = api.getOption?.(PLUGIN_ID, "performanceMode") === true;
-  applyPerformanceMode();
-  if (phase === "InProgress") startUngate();
+  backgroundMode = option("backgroundMode");
+  liteMode = option("performanceMode");
+  restores = [installFetch(), installXhr(), installBeacon(), quietDatadog(), installModes(), installMediaGovernor()];
+  unsubscribe = utils.subscribe(PHASE_URI, onPhase);
+  utils.lcu
+    .get(PHASE_URI)
+    .then(onPhase)
+    .catch(() => {});
+  applyModes();
 }
 
 function onDisable() {
   active = false;
-  stopPhaseWatch();
-  stopUngate();
-  for (const off of unsubscribes) {
-    try {
-      off();
-    } catch {}
-  }
-  unsubscribes = [];
+  unsubscribe?.();
+  unsubscribe = null;
   for (const restore of restores.reverse()) {
     try {
       restore();
     } catch {}
   }
   restores = [];
-  if (removePerformanceStyle) {
-    removePerformanceStyle();
-    removePerformanceStyle = null;
-  }
-  performanceMode = false;
-  inflight.clear();
-  blockDecisions.clear();
-  for (const key of [...cache.keys()]) evictOne(key);
-  cacheBytes = 0;
+  decisions.clear();
+  phase = "None";
   api = null;
 }
 
 function onOptionChange(key, value) {
-  if (key === "performanceMode") {
-    performanceMode = value === true;
-    applyPerformanceMode();
-  }
+  if (key === "backgroundMode") backgroundMode = value === true;
+  if (key === "performanceMode") liteMode = value === true;
+  applyModes();
 }
 
 export function init() {
@@ -776,7 +345,7 @@ export function init() {
       id: PLUGIN_ID,
       name: "BetterClient",
       description:
-        "Debloats the client: blocks telemetry and analytics calls, merges duplicate requests, caches static client data, decodes images asynchronously and keeps settings, chat and friend requests usable during a game.",
+        "Makes the client lighter without changing how it looks: pauses videos and animations nobody can see, blocks telemetry, and pauses the client while you are in a game.",
       version,
       options: OPTIONS,
       onEnable,
